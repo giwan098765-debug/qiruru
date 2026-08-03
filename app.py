@@ -1192,7 +1192,7 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
         pos_names = [x[0] for x in kr_pos + us_pos]
         neg_names = [x[0] for x in kr_neg + us_neg]
         
-        is_leading_sector = any(p_name in ticker_symbol or p_name in selected_name for p_name in pos_names)
+        is_leading_sector = any(p_name in ticker_symbol for p_name in pos_names)
         is_lagging_sector = any(n_name in ticker_symbol or n_name in selected_name for n_name in neg_names)
 
         if is_leading_sector:
@@ -4047,6 +4047,7 @@ with main_tab2:
             import sqlite3
             import numpy as np
             from concurrent.futures import ThreadPoolExecutor, as_completed
+            from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
             
             socket.setdefaulttimeout(2.5)
 
@@ -4065,9 +4066,48 @@ with main_tab2:
             except Exception:
                 pass
 
-            # 2. 💾 [캐스 스캐너] 한 번 스캔한 N봉 전 데이터는 메모리에 1시간 보관 (재스캔 방지)
-            @st.cache_data(ttl=3600, show_spinner="⚡ 과거 차트 데이터 스캔 및 실전 성과 분석 중...")
-            def get_cached_retro_candidates(bars_ago_val):
+            # 과거 시점 검증 워커 함수 (NameError 차단용 위치)
+            def eval_past_recommendation_worker(cand, ctx):
+                if ctx is not None:
+                    add_script_run_ctx(ctx=ctx)
+                try:
+                    market_label, name, ticker = cand
+                    df_hist = get_raw_daily_data(ticker)
+                    if df_hist is None or len(df_hist) < 130:
+                        return None
+
+                    bars_ago_val = st.session_state.get('slider_bars_ago', 5)
+                    t_idx = len(df_hist) - 1 - bars_ago_val
+                    if t_idx < 60:
+                        return None
+
+                    df_sub = df_hist.iloc[:t_idx + 1].copy()
+                    df_proc, ai_data = process_data(df_sub, "daily", ticker, skip_news=True)
+                    signal_str, exp_win, exp_ret, c_close = evaluate_stock_signal(df_proc, ai_data)
+
+                    if not signal_str:
+                        return None
+
+                    entry_p = c_close * 0.995 if exp_win >= 88.0 else (c_close * 0.990 if exp_win >= 72.0 else c_close)
+                    atr_val = float(df_proc['ATR'].iloc[-1]) if 'ATR' in df_proc.columns else entry_p * 0.03
+
+                    return {
+                        "market": market_label,
+                        "name": name,
+                        "ticker": ticker,
+                        "entry_p": entry_p,
+                        "signal": signal_str,
+                        "score": (exp_win * 0.5) + (exp_ret * 4.0),
+                        "exp_win": exp_win,
+                        "exp_ret": exp_ret,
+                        "atr": atr_val,
+                        "t_idx": t_idx
+                    }
+                except Exception:
+                    return None
+
+            # 2. 📊 프로그레스 바 및 스캔 진행 상황 UI 세팅
+            if not db_top_tasks:
                 categories = [("국내", "₩ 국내 주식"), ("미국", "💲 미국 주식"), ("코인", "🪙 암호화폐(코인)")]
                 all_candidates = []
                 for m_label, asset_key in categories:
@@ -4075,27 +4115,42 @@ with main_tab2:
                     for name, ticker in items.items():
                         all_candidates.append((m_label, name, ticker))
 
+                total_count = len(all_candidates)
                 cand_matched = []
-                with ThreadPoolExecutor(max_workers=8) as executor:
-                    futures = {executor.submit(eval_past_recommendation, cand): cand for cand in all_candidates}
+                processed = 0
+
+                progress_bar = st.progress(0.0)
+                status_box = st.empty()
+                ctx = get_script_run_ctx()
+
+                with ThreadPoolExecutor(max_workers=12) as executor:
+                    futures = {executor.submit(eval_past_recommendation_worker, cand, ctx): cand for cand in all_candidates}
                     for future in as_completed(futures):
+                        processed += 1
+                        cand_info = futures[future]
+                        stock_name = cand_info[1]
+
+                        pct = min(1.0, processed / total_count)
+                        progress_bar.progress(pct)
+                        status_box.markdown(f"🚀 **과거 {bars_ago}봉 전 추천주 스캔 중...** `{processed}/{total_count}` ({int(pct*100)}%) | 분석 중: **{stock_name}**")
+
                         try:
                             res = future.result(timeout=2.0)
                             if res: cand_matched.append(res)
                         except Exception:
                             continue
 
+                progress_bar.progress(1.0)
+                status_box.success(f"✅ 과거 {bars_ago}봉 전 추천주 스캔 완료!")
+
                 top_kr = sorted([x for x in cand_matched if x['market'] == "국내"], key=lambda x: x['score'], reverse=True)[:5]
                 top_us = sorted([x for x in cand_matched if x['market'] == "미국"], key=lambda x: x['score'], reverse=True)[:5]
                 top_coin = sorted([x for x in cand_matched if x['market'] == "코인"], key=lambda x: x['score'], reverse=True)[:5]
-                return top_kr + top_us + top_coin
-
-            if not db_top_tasks:
-                selected_tops = get_cached_retro_candidates(bars_ago)
+                selected_tops = top_kr + top_us + top_coin
             else:
                 selected_tops = db_top_tasks
 
-            # 3. 🎯 엄격한 실시간 매매 시뮬레이션
+            # 3. 🎯 실시간 매매 시뮬레이션 진행
             final_results = []
             all_returns = []
             win_count = 0
