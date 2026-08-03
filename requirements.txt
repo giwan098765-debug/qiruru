@@ -3,6 +3,8 @@ pandas
 numpy
 plotly
 yfinance
-FinanceDataReader
+finance-datareader
 google-generativeai
 requests
+lxml
+beautifulsoup4
