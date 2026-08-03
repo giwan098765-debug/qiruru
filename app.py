@@ -3939,7 +3939,7 @@ with main_tab2:
     # --------------------------------------------------------------------
     with col_b1:
         st.markdown("#### 1️⃣ 오늘의 시장별 통합 Top 10 추천")
-        st.caption("✨무조건 20일선 or 60일선에 조건주문 걸기✨ / 바로 주문 ❌")
+        st.markdown("<div style='color: #ffffff; font-weight: bold; font-size: 14px; margin-bottom: 10px;'>✨무조건 20일선 or 60일선에 조건주문 걸기✨ / 바로 주문 ❌</div>", unsafe_allow_html=True)
 
         if st.button("🔥 실시간 전 시장 스캔", key="btn_direct_scan", use_container_width=True):
             bg_scan_worker(ASSETS)
