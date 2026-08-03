@@ -2272,6 +2272,15 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
     fig.update_xaxes(type='category', showticklabels=False)
     fig.update_yaxes(autorange=True, fixedrange=False)
 
+    # 💡 모바일 터치 시 페이지 스크롤 대신 차트 제스처가 동작하도록 강제하는 CSS
+    st.markdown("""
+    <style>
+    .js-plotly-plot .plotly .main-svg {
+        touch-action: none !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     fig.update_layout(
         height=1000, 
         template="plotly_dark", 
@@ -2279,40 +2288,24 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
         showlegend=False, 
         xaxis_rangeslider_visible=False,
         hovermode="closest",
-        newshape=dict(line_color="cyan", line_width=4),
-        dragmode="pan", 
+        dragmode="pan",
         
         modebar=dict(
             orientation='v',                  
             bgcolor='rgba(20, 20, 20, 0.7)', 
             color='#cbd5e1',                  
             activecolor='#38bdf8',
-            add=['drawline', 'eraseshape'],                                         
-            remove=['autoScale2d', 'drawopenpath', 'lasso2d', 'select2d', 'zoomIn2d', 'zoomOut2d'] 
-        ),
-        
-        hoverlabel=dict(
-            bgcolor="rgba(30, 41, 59, 0.85)",   
-            bordercolor="#38bdf8",             
-            font_size=13,                      
-            font_family="monospace",           
-            font_color="#ffffff"               
+            add=['drawline', 'eraseshape', 'zoomIn2d', 'zoomOut2d', 'resetScale2d'], 
+            remove=['autoScale2d', 'drawopenpath', 'lasso2d', 'select2d'] 
         )
     )
     
-    # 💥 핵심 교정: 'displayModeBar': 'always'로 설정하여 도구들을 상시 노출시킵니다.
     chart_config = {
-        'scrollZoom': True,  
-        'displayModeBar': 'always' 
+        'scrollZoom': True,
+        'displayModeBar': True,
+        'responsive': True
     }
-    
-    # ====================================================================
-    # 🚫 [완전 차단] 캔들차트 외 모든 선/바 지표의 영문 호버 팝업 원천 제거
-    # ====================================================================
-    fig.update_traces(hoverinfo="skip", selector=dict(type="scatter"))
-    fig.update_traces(hoverinfo="skip", selector=dict(type="bar"))
 
-    # 🛒 기존에 있던 차트 출력 코드 위치 (이 줄 바로 위에 붙여넣으시면 됩니다)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{tab_name}", config=chart_config)
 
     if api_key:
@@ -2987,9 +2980,9 @@ sector = st.sidebar.radio(
     "📁 섹터 선택",
     [
         "₩ 국내 주식",
-        "$ 미국 주식",
+        "💲 미국 주식",  # 👈 기존 '$'를 '💲' 이모지로 똑같이 바꿔줍니다!
         "🪙 암호화폐(코인)",
-        "🎯 내 실전 보유종목 관제",  # 👈 [신규 추가] 클릭 시 내 보유종목 모니터링
+        "🎯 내 실전 보유종목 관제",
         "🌏 글로벌 실시간 증시 뉴스",
         "🔍 직접 이름/티커 검색"
     ]
@@ -4066,7 +4059,7 @@ with main_tab2:
             except Exception:
                 pass
 
-            # 과거 시점 검증 워커 함수 (NameError 차단용 위치)
+            # 과거 시점 검증 워커 함수
             def eval_past_recommendation_worker(cand, ctx):
                 if ctx is not None:
                     add_script_run_ctx(ctx=ctx)
