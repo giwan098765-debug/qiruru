@@ -2993,7 +2993,7 @@ sector = st.sidebar.radio(
 # =========================================================
 st.sidebar.markdown("---")
 st.sidebar.link_button(
-    "🔥 토스증권 실시간 뜨는 산업 ↗", 
+    "🔥 토스증권 바로가기 PC ↗", 
     "https://www.tossinvest.com/?ranking-type=trending_category&focusedTicsId=29&tics-nation=KR",
     use_container_width=True
 )
@@ -3903,16 +3903,16 @@ def bg_scan_worker(assets_dict):
 # ====================================================================
 # 메인 탭 선언 및 레이아웃 분리
 # ====================================================================
-main_tab1, main_tab2 = st.tabs(["📈 실시간 차트 & 종목 분석", "📜 과거 추천주 성과 검증 관제탑"])
+main_tab1, main_tab2 = st.tabs(["📈 실시간 차트 & 종목 분석", " ✨단타 개별주 추천✨ "])
 
 # --------------------------------------------------------------------
 # 1️⃣ 메인 탭 1: 실시간 차트 & 종목 분석
 # --------------------------------------------------------------------
 with main_tab1:
     tab_d, tab_w, tab_m = st.tabs([
-        "📆 일봉  *[1~5일 단타]*", 
-        "🗓️ 주봉  *[1~3달 스윙]*", 
-        "📅 월봉  *[6달~1년 장기]*"
+        "📆 일봉", 
+        "🗓️ 주봉", 
+        "📅 월봉"
     ])
     if safe_ticker and raw_data is not None and not raw_data.empty:
         with tab_d:
@@ -3941,7 +3941,7 @@ with main_tab2:
         st.markdown("#### 1️⃣ 오늘의 시장별 통합 Top 10 추천")
         st.caption("👑 융합 스페셜 / 🛡️ 주도주 눌림목 / 🔥 단기 돌파 타점을 직관적으로 분류합니다.")
 
-        if st.button("🔥 실시간 전 시장 스캔 & Top 10 보기", key="btn_direct_scan", use_container_width=True):
+        if st.button("🔥 실시간 전 시장 스캔", key="btn_direct_scan", use_container_width=True):
             bg_scan_worker(ASSETS)
 
         # ====================================================================
@@ -4014,7 +4014,7 @@ with main_tab2:
             with c2: render_unified_top10("🇺🇸 미국 증시", 'scan_results_us')
             with c3: render_unified_top10("🪙 암호화폐", 'scan_results_coin')
         else:
-            st.info("💡 위의 [실시간 전 시장 스캔 & Top 10 보기] 버튼을 누르면 스캔이 시작됩니다.")
+            st.info("💡 위의 [실시간 전 시장 스캔] 버튼을 누르면 스캔이 시작됩니다.")
 
     # --------------------------------------------------------------------
     # 2. 과거 N봉 전 추천주 실전 매매 검증 (하이브리드 익절 & -3% 강제 손절)
