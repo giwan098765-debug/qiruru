@@ -858,7 +858,7 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     if timeframe == 'weekly':
         df = df.resample('W-FRI', on='Date').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna().reset_index()
     elif timeframe == 'monthly':
-        df = df.resample('M', on='Date').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna().reset_index()
+        df = df.resample('ME', on='Date').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna().reset_index()
 
     # 신규 상장주도 차트가 그려지도록 최소 기준 완화
     min_required = 1
