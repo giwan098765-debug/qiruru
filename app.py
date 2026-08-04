@@ -674,122 +674,6 @@ def get_raw_daily_data(ticker):
     except Exception:
         return None
 
-    # 🇺🇸 [3. 미국 주식 수집]
-    df = None
-    try:
-        df = yf.download(ticker, period="3y", interval="1d", auto_adjust=False, progress=False)
-    except Exception:
-        df = None
-        
-    if df is None or df.empty:
-        try:
-            df = fdr.DataReader(ticker, start='2024-01-01')
-            if df is not None and not df.empty:
-                df = df.reset_index()
-                df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
-                df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
-        except Exception:
-            df = None
-            
-    if df is None or df.empty:
-        return None
-        
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-        
-    if 'Date' not in df.columns:
-        df = df.reset_index()
-
-    if df is not None and not df.empty:
-        if 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date'])
-            if df['Date'].dt.tz is not None:
-                df['Date'] = df['Date'].dt.tz_localize(None)
-            
-            df['Date_Only'] = df['Date'].dt.date
-            df = df.drop_duplicates(subset=['Date_Only'], keep='last').drop(columns=['Date_Only']).reset_index(drop=True)
-
-    return df
-
-    # 🇰🇷 [2. 대한민국 국내 주식 특화]
-    clean_ticker = ticker.split('.')[0].strip()
-    is_kr_stock = ticker.upper().endswith('.KS') or ticker.upper().endswith('.KQ') or (clean_ticker.isdigit() and len(clean_ticker) == 6)
-    
-    if is_kr_stock:
-        try:
-            df = fdr.DataReader(clean_ticker, start='1990-01-01')
-            if df.empty: return None
-            df = df.reset_index()
-            df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
-            df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
-            df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
-            
-            # 날짜 중복 제거
-            df['Date_Only'] = df['Date'].dt.date
-            df = df.drop_duplicates(subset=['Date_Only'], keep='last').drop(columns=['Date_Only']).reset_index(drop=True)
-            return df
-        except Exception:
-            return None
-
-    # 🇺🇸 [3. 미국 주식 수집 및 중복 캔들 방지]
-    df = None
-    try:
-        if hasattr(yf, '_original_download'):
-            df = yf._original_download(ticker, period="max", interval="1d", progress=False)
-        else:
-            df = yf.download(ticker, period="max", interval="1d", progress=False)
-    except Exception:
-        df = None
-        
-    if df is None or df.empty:
-        try:
-            ticker_obj = yf._original_Ticker(ticker) if hasattr(yf, '_original_Ticker') else yf.Ticker(ticker)
-            df = ticker_obj.history(period="10y", interval="1d")
-        except Exception:
-            df = None
-            
-    if df is None or df.empty:
-        try:
-            df = fdr.DataReader(ticker, start='2016-01-01')
-            if df is not None and not df.empty:
-                df = df.reset_index()
-                df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
-                df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
-        except Exception:
-            df = None
-            
-    if df is None or df.empty:
-        return None
-        
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-        
-    if 'Date' not in df.columns:
-        df = df.reset_index()
-
-    # 🎯 미국 장중 실시간 가격 업데이트 (새 봉을 강제로 붙이지 않고 마지막 봉의 종가만 갱신)
-    try:
-        ticker_obj = yf._original_Ticker(ticker) if hasattr(yf, '_original_Ticker') else yf.Ticker(ticker)
-        fast_info = ticker_obj.fast_info
-        live_price = fast_info.last_price
-        
-        if live_price and not pd.isna(live_price):
-            df.loc[df.index[-1], 'Close'] = live_price
-    except Exception:
-        pass
-
-    # 🎯 [핵심] 날짜 타임존 정제 및 동일 날짜 캔들 강제 중복 제거
-    if df is not None and not df.empty:
-        if 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date'])
-            if df['Date'].dt.tz is not None:
-                df['Date'] = df['Date'].dt.tz_localize(None)
-            
-            df['Date_Only'] = df['Date'].dt.date
-            df = df.drop_duplicates(subset=['Date_Only'], keep='last').drop(columns=['Date_Only']).reset_index(drop=True)
-
-    return df
-
 
 # 🎯 @st.cache_data(ttl=3600)
 @st.cache_data(ttl=3600)
@@ -1721,10 +1605,10 @@ def render_my_portfolio_manager():
                 entry_conds = eval_conditions_at_idx(df_curr, rec_idx)
 
                 if bars_passed <= 20:
-                    rec_display_txt = f"추천일: {rec_date_str}"
+                    rec_display_txt = f"시그널 발생일: {rec_date_str}"
                     is_valid_rec = True
                 else:
-                    rec_display_txt = f"추천 만료 ({rec_date_str})"
+                    rec_display_txt = f"시그널 만료 ({rec_date_str})"
                     is_valid_rec = False
             else:
                 rec_display_txt = f"등록일: {e_date}"
@@ -1761,8 +1645,8 @@ def render_my_portfolio_manager():
                         remaining_qty -= 0.50
                         tp1_done = True
 
-                    if tp1_done and not tp2_done and b_high_ret >= tp2_ret:
-                        realized_ret += 0.25 * tp2_ret
+                    if tp1_done and not tp2_done and b_high_ret >= tp2_pct:
+                        realized_ret += 0.25 * tp2_pct
                         remaining_qty -= 0.25
                         tp2_done = True
 
@@ -3321,134 +3205,132 @@ GLOBAL_TOTAL_SIGNALS = 0
 
 # 🎯 종목명이 "글로벌 매크로 시황"이면 주식 분석을 전부 패스하고 즉시 뉴스피드 출력 후 종료
 if 'selected_name' in locals() and selected_name == "글로벌 매크로 시황":
-    st.info("🌍 글로벌 실시간 증시 뉴스")
-    st.write("미국 뉴욕증시 및 국내 금융시장에 직접적인 하이 임팩트를 주는 당일 주요 시황 뉴스를 실시간 스캔합니다.")
-    st.markdown("### 🔥 당일 미-국내 증시 영향력 TOP 10 핵심 뉴스")
+    st.info("🌍 글로벌 실시간 증시 뉴스 (국내 6개 + 미국 6개)")
+    st.write("장전, 장중, 장 마감 후 시간대에 맞춰 단타 핵심 뉴스를 자동 분기하여 스캔합니다.")
 
     try:
         import urllib.request
         import urllib.parse
         import xml.etree.ElementTree as ET
+        import re
+        from datetime import datetime, time as dtime
 
-        # 3일 이내(when:3d) 핵심 타깃 검색
-        macro_query = "(코스피 OR 코스닥 OR 나스닥 OR 삼성전자 OR 하이닉스 OR 엔비디아 OR 테슬라 OR 애플) when:3d"
-        encoded_macro = urllib.parse.quote(macro_query)
-        url = f"https://news.google.com/rss/search?q={encoded_macro}&hl=ko&gl=KR&ceid=KR:ko"
-        
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=3) as response:
-            xml_data = response.read()
-            
-        root = ET.fromstring(xml_data)
-        all_items = root.findall('.//item')
-        
-        # 🧩 교통정리용 바구니 및 중복 방지 저장소
-        seen_titles = set()
-        seen_stocks = set()
-        
-        kospi_news = []
-        kosdaq_news = []
-        nasdaq_news = []
-        stock_news = []
-        
-        # 1단계: 지수 뉴스 추출 (코스피, 코스닥, 나스닥 딱 1개씩 선점)
-        for item in all_items:
-            title_text = item.find('title').text
-            pure_title = title_text.split(' - ')[0].strip()
-            title_key = pure_title[:14]  # 앞 14글자가 같으면 중복 뉴스로 취급
-            
-            if title_key in seen_titles:
-                continue
-                
-            if '코스피' in pure_title and not kospi_news:
-                kospi_news.append(item)
-                seen_titles.add(title_key)
-            elif '코스닥' in pure_title and not kosdaq_news:
-                kosdaq_news.append(item)
-                seen_titles.add(title_key)
-            elif '나스닥' in pure_title and not nasdaq_news:
-                nasdaq_news.append(item)
-                seen_titles.add(title_key)
+        now_time = datetime.now().time()
 
-        # 2단계: 대형주 종목별 '골고루 담기' 쿼터제 작동
-        target_companies = ['삼성전자', '하이닉스', '엔비디아', '테슬라', '애플', '마이크로소프트']
-        
-        # 종목당 딱 1개씩만 우선적으로 바구니에 수집
-        for item in all_items:
-            title_text = item.find('title').text
-            pure_title = title_text.split(' - ')[0].strip()
-            title_key = pure_title[:14]
-            
-            if title_key in seen_titles:
-                continue
-            if item in (kospi_news + kosdaq_news + nasdaq_news):
-                continue
-                
-            for company in target_companies:
-                if company in pure_title and company not in seen_stocks:
-                    if len(stock_news) < 7:
-                        stock_news.append(item)
-                        seen_stocks.add(company)
-                        seen_titles.add(title_key)
-                    break
+        # 🎯 1. 대한민국 증시 세부 시간대 분기 (09:00 개장 / 15:30 마감)
+        is_kr_premarket  = dtime(6, 0) <= now_time < dtime(9, 0)     # 장전 (06:00 ~ 09:00)
+        is_kr_market     = dtime(9, 0) <= now_time < dtime(15, 30)   # 장중 (09:00 ~ 15:30)
 
-        # 3단계: 그래도 10개가 안 채워졌다면, 중복되지 않은 최신 시황/종목 기사로 잔여석 마감
-        final_items = kospi_news + kosdaq_news + nasdaq_news + stock_news
-        if len(final_items) < 10:
-            for item in all_items:
-                if len(final_items) >= 10:
-                    break
-                title_text = item.find('title').text
-                pure_title = title_text.split(' - ')[0].strip()
-                title_key = pure_title[:14]
-                
-                if title_key in seen_titles or item in final_items:
-                    continue
+        if is_kr_premarket:
+            kr_time_filter = "when:3h"
+            kr_status_txt = "🔴 장전 3시간 속보 모드 (09:00 개장 직전)"
+        elif is_kr_market:
+            kr_time_filter = "when:7h"
+            kr_status_txt = "🟢 장중 실시간 속보 모드 (09:00~15:30 장중)"
+        else:
+            kr_time_filter = "when:12h"
+            kr_status_txt = "🌙 장 마감 후 실시간 속보 모드 (15:30 마감 이후)"
+
+        # 🎯 2. 미국 증시 세부 시간대 분기 (22:30 개장 / 05:00 마감 기준)
+        is_us_premarket  = dtime(19, 30) <= now_time < dtime(22, 30)               # 장전 (19:30 ~ 22:30)
+        is_us_market     = (now_time >= dtime(22, 30)) or (now_time < dtime(5, 0)) # 장중 (22:30 ~ 05:00)
+
+        if is_us_premarket:
+            us_time_filter = "when:3h"
+            us_status_txt = "🔴 장전 3시간 속보 모드 (22:30 개장 직전)"
+        elif is_us_market:
+            us_time_filter = "when:7h"
+            us_status_txt = "🟢 장중 실시간 속보 모드 (22:30~05:00 장중)"
+        else:
+            us_time_filter = "when:14h"
+            us_status_txt = "🌙 장 마감 후 실시간 속보 모드 (05:00 마감 이후)"
+
+        # 🎯 3. 검색 쿼리 구성
+        kr_query = f"(실적 OR 급등 OR 수주 OR 공시 OR 어닝 OR 목표가 OR M&A) (코스피 OR 코스닥 OR 삼성전자 OR SK하이닉스) {kr_time_filter}"
+        us_query = f"(실적 OR 급등 OR 어닝 OR M&A OR 엔비디아 OR 테슬라 OR 애플 OR 나스닥 OR 뉴욕증시) {us_time_filter}"
+
+        EXCLUDE_SOURCES = ['블로그', 'blog', 'brunch', '포스트', '뉴스wire', 'newswire', '브런치']
+
+        def extract_keywords(text):
+            return set(re.findall(r'[가-힣a-zA-Z0-9]{2,}', text))
+
+        def is_similar_news(new_words, word_set_list, threshold=0.4):
+            if not new_words: return True
+            for existing_words in word_set_list:
+                intersection = new_words.intersection(existing_words)
+                if len(intersection) / float(min(len(new_words), len(existing_words))) >= threshold:
+                    return True
+            return False
+
+        # 🎯 4. 뉴스 수집 헬퍼 함수
+        def fetch_market_news(query, limit=6):
+            encoded = urllib.parse.quote(query)
+            url = f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            
+            items_res = []
+            collected_words = []
+            
+            with urllib.request.urlopen(req, timeout=3) as response:
+                root = ET.fromstring(response.read())
+                for item in root.findall('.//item'):
+                    if len(items_res) >= limit: break
                     
-                if any(k in pure_title for k in target_companies + ['증시', '시황']):
-                    final_items.append(item)
-                    seen_titles.add(title_key)
+                    title_text = item.find('title').text
+                    pure_title, source = title_text.rsplit(' - ', 1) if ' - ' in title_text else (title_text, "속보")
                     
-        # 📸 뉴스피드 고화질 썸네일 플레이스홀더 10개
+                    if any(ex.lower() in source.lower() for ex in EXCLUDE_SOURCES):
+                        continue
+                        
+                    current_words = extract_keywords(pure_title)
+                    if is_similar_news(current_words, collected_words):
+                        continue
+                        
+                    items_res.append((pure_title, source, item.find('link').text))
+                    collected_words.append(current_words)
+            return items_res
+
+        kr_news = fetch_market_news(kr_query, 6)
+        us_news = fetch_market_news(us_query, 6)
+
+        # 📸 썸네일 고화질 이미지 리스트
         placeholders = [
-            "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=300&q=80",  # 지수
-            "https://images.unsplash.com/photo-1590283603385-17ffb3a7f29f?w=300&q=80",  # 지수
-            "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=300&q=80",  # 미국지수
-            "https://images.unsplash.com/photo-1518770660439-4636190af475?w=300&q=80",  # 삼전
-            "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=300&q=80",  # 하이닉스
-            "https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=300&q=80",  # 엔비디아
-            "https://images.unsplash.com/photo-1617788138017-80ad40651399?w=300&q=80",  # 테슬라
-            "https://images.unsplash.com/photo-1510557880182-3d4d3cba35a5?w=300&q=80",  # 애플
-            "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?w=300&q=80",  # 마이크로소프트
-            "https://images.unsplash.com/photo-1591696205602-2f950c417cb9?w=300&q=80"   # 종합
+            "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=300&q=80",
+            "https://images.unsplash.com/photo-1590283603385-17ffb3a7f29f?w=300&q=80",
+            "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=300&q=80",
+            "https://images.unsplash.com/photo-1518770660439-4636190af475?w=300&q=80",
+            "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=300&q=80",
+            "https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=300&q=80"
         ]
-        
-        if final_items:
-            for idx, item in enumerate(final_items):
-                title_text = item.find('title').text
-                if ' - ' in title_text:
-                    pure_title, source = title_text.rsplit(' - ', 1)
-                else:
-                    pure_title, source = title_text, "시황 종합"
-                    
-                working_link = item.find('link').text
+
+        # 🎯 5. 썸네일 포함 UI 카드 출력 헬퍼 함수
+        def render_news_section(title, news_list, status_txt):
+            st.markdown(f"#### {title} <span style='font-size:12px; color:#38bdf8;'>[{status_txt}]</span>", unsafe_allow_html=True)
+            
+            if not news_list:
+                st.caption("⚪ 해당 시간대에 발생한 특이 뉴스가 없습니다.")
+                return
+
+            for idx, (pure_title, source, working_link) in enumerate(news_list):
                 thumb_url = placeholders[idx % len(placeholders)]
-                
                 st.markdown(f"""
                 <div style="display: flex; background-color: rgba(255,255,255,0.02); border-radius: 8px; margin-bottom: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.05); align-items: center; width: 100%;">
                     <img src="{thumb_url}" style="width: 120px; height: 85px; object-fit: cover; flex-shrink: 0;" />
                     <div style="padding: 10px 16px; flex-grow: 1;">
-                        <span style="font-size: 11px; color: #a1a1aa; font-weight: 600; text-transform: uppercase;">📰 {source}</span>
+                        <span style="font-size: 11px; color: #38bdf8; font-weight: bold;">🔥 [{source}]</span>
                         <h4 style="margin: 4px 0 0 0; font-size: 14px; line-height: 1.45; font-weight: bold;">
-                            <a href="{working_link}" target="_blank" style="color: #38bdf8; text-decoration: none;">{pure_title}</a>
+                            <a href="{working_link}" target="_blank" style="color: #e2e8f0; text-decoration: none;">{pure_title}</a>
                         </h4>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-        else:
-            st.warning("🔥 최근 3일 이내에 조건에 맞는 핵심 뉴스가 포착되지 않았습니다.")
+
+        render_news_section("🇰🇷 대한민국 증시 핵심 뉴스 (6선)", kr_news, kr_status_txt)
+        st.write("")
+        render_news_section("🇺🇸 미국 증시 핵심 뉴스 (6선)", us_news, us_status_txt)
+
     except Exception as e:
-        st.error(f"⚠️ [시스템] 실시간 뉴스망 동기화 실패 (오류 원인: {e})")
+        st.error(f"⚠️ [시스템] 실시간 글로벌 뉴스망 동기화 실패 (오류 원인: {e})")
     
     st.stop()
 
@@ -3715,6 +3597,45 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # ====================================================================
+# 🎯 [20-60일선 밀집 방어 + 실제 이평선 다이렉트 진입가 Engine]
+# ====================================================================
+def calculate_smart_entry_price(df_proc, ai_data):
+    c_close = float(df_proc['Close'].iloc[-1])
+    c_vol   = float(df_proc['Volume'].iloc[-1])
+    vol_ma20= float(df_proc['Vol_MA_20'].iloc[-1]) if float(df_proc['Vol_MA_20'].iloc[-1]) > 0 else 1.0
+    rvol    = c_vol / vol_ma20
+    up_p    = float(ai_data.get('up_prob', 50.0))
+
+    # 주요 지표 수치
+    ma5  = float(df_proc['MA_5'].iloc[-1])  if 'MA_5' in df_proc.columns else c_close
+    ma20 = float(df_proc['MA_20'].iloc[-1]) if 'MA_20' in df_proc.columns else c_close
+    ma60 = float(df_proc['MA_60'].iloc[-1]) if 'MA_60' in df_proc.columns else c_close
+    poc  = float(ai_data.get('poc_price', c_close))
+
+    # 🚨 [신규 보완] 20일선과 60일선 간격이 2% 이내로 밀집했는지 검증
+    ma_gap_pct = abs(ma20 - ma60) / ma20 * 100.0 if ma20 > 0 else 100.0
+    is_ma_clustered = ma_gap_pct <= 2.0
+
+    # [LEVEL 1] 초강세주 ➔ 5일선 지지 타점
+    if up_p >= 80.0 and rvol >= 1.5 and c_close >= ma5:
+        return round(ma5, 2), "🔥 [초강세] 5일선 지정가 타점"
+
+    # [LEVEL 2] 20일선-60일선 밀집 구간 ➔ 60일선 안전 타점 (갑작스런 투매 방어)
+    elif is_ma_clustered and c_close >= ma60:
+        return round(ma60, 2), f"🛡️ [이평수렴] 20·60일선 밀집 ➔ 60일선 안전 타점"
+
+    # [LEVEL 3] 일반 강세/눌림목 ➔ 20일선 또는 POC 매물대 타점 (10일선 제거)
+    elif c_close >= ma20:
+        if abs(c_close - ma20) <= abs(c_close - poc):
+            return round(ma20, 2), "🎯 [눌림목] 20일선 지정가 타점"
+        else:
+            return round(poc, 2), "🎯 [매물대] POC 매물대 지지 타점"
+
+    # [LEVEL 4] 약세 / 하방 확장주 ➔ 60일선 타점
+    else:
+        return round(ma60, 2), "🛡️ [보수적] 60일선 최후 지지 타점"
+
+# ====================================================================
 # 🎯 [공통 핵심 필터 Engine] 1번 탑10 & 2번 소급 검증 100% 공유 함수
 # ====================================================================
 def evaluate_stock_signal(df_proc, ai_data):
@@ -3780,17 +3701,20 @@ def process_single_ticker_unbound(item):
         if not signal_str:
             return None
 
-        calc_entry = c_close * 0.995 if up_p >= 88.0 else (c_close * 0.990 if up_p >= 72.0 else c_close)
+        # 🎯 동적 스마트 진입가 연동
+        calc_entry, entry_tag = calculate_smart_entry_price(df_proc, ai_data)
+        full_signal_str = f"{entry_tag} / {signal_str}"
+
         composite_score = (up_p * 0.5) + (up_s * 4.0)
 
         return {
             "name": name, 
             "ticker": ticker,
-            "entry_price": round(calc_entry, 2),
+            "entry_price": calc_entry,
             "up_prob": round(up_p, 1),
             "upside": round(up_s, 1),
             "composite_score": round(composite_score, 2),
-            "signal": signal_str,
+            "signal": full_signal_str,
             "score": 3 if up_p >= 80.0 else 2
         }
     except Exception:
@@ -4081,7 +4005,14 @@ with main_tab2:
                     if not signal_str:
                         return None
 
-                    entry_p = c_close * 0.995 if exp_win >= 88.0 else (c_close * 0.990 if exp_win >= 72.0 else c_close)
+                    signal_str, exp_win, exp_ret, c_close = evaluate_stock_signal(df_proc, ai_data)
+
+                    if not signal_str:
+                        return None
+
+                    # 🎯 과거 시점 데이터 기준 동일 스마트 진입가 산출
+                    entry_p, entry_tag = calculate_smart_entry_price(df_proc, ai_data)
+                    full_signal_str = f"{entry_tag} / {signal_str}"
                     atr_val = float(df_proc['ATR'].iloc[-1]) if 'ATR' in df_proc.columns else entry_p * 0.03
 
                     return {
@@ -4089,7 +4020,7 @@ with main_tab2:
                         "name": name,
                         "ticker": ticker,
                         "entry_p": entry_p,
-                        "signal": signal_str,
+                        "signal": full_signal_str,
                         "score": (exp_win * 0.5) + (exp_ret * 4.0),
                         "exp_win": exp_win,
                         "exp_ret": exp_ret,
@@ -4225,7 +4156,11 @@ with main_tab2:
                 if not is_closed and remaining_qty > 0:
                     last_c_ret = ((float(future_bars['Close'].iloc[-1]) - entry_p) / entry_p) * 100
                     realized_ret += remaining_qty * last_c_ret
-                    events.append(f"5봉종가청산({last_c_ret:+.1f}%)")
+                    # 💡 5봉 미만일 때는 '현재가 매도시', 5봉 달성 시 '5봉종가청산'으로 표기
+                    if len(future_bars) < 5:
+                        events.append(f"현재가 매도시({last_c_ret:+.1f}%)")
+                    else:
+                        events.append(f"5봉종가청산({last_c_ret:+.1f}%)")
 
                 if realized_ret > 0: win_count += 1
                 all_returns.append(realized_ret)
@@ -4241,7 +4176,10 @@ with main_tab2:
                 elif "무조건강제손절" in "".join(events):
                     reason = f"🛑 **-3.0% 강제 손절**: +2% 도달 못하고 하락하여 -3.0% 지점에서 즉시 전량 손절"
                 else:
-                    reason = f"⏸️ **5봉 종가 청산**: 익절/손절 미달로 5봉째 종가 매도 ({', '.join(events)})"
+                    if len(future_bars) < 5:
+                        reason = f"⏸️ **현재가 매도 기준**: 익절/손절 미달로 현재가 청산 ({', '.join(events)})"
+                    else:
+                        reason = f"⏸️ **5봉 종가 청산**: 익절/손절 미달로 5봉째 종가 매도 ({', '.join(events)})"
 
                 item['real_ret'] = realized_ret
                 item['max_ret'] = max_ret
@@ -4275,7 +4213,7 @@ with main_tab2:
                 st.markdown("---")
 
                 # ====================================================================
-                # 🎯 [소급 검증 카드 출력 UI]
+                # 🎯 [수정 및 들여쓰기 교정 완료] 소급 검증 카드 출력 UI
                 # ====================================================================
                 def render_retro_cards(title, item_list):
                     st.markdown(f"### {title}")
@@ -4288,6 +4226,11 @@ with main_tab2:
                         max_val = item['max_ret']
                         exp_win = item.get('exp_win', 75.0)
                         exp_ret = item.get('exp_ret', 3.0)
+                        entry_p = item.get('entry_p', 0.0)
+                        
+                        # 화폐 단위별 진입가 포맷팅 (원화/달러 자동 구분)
+                        is_krw = any(x in item.get('ticker', '') for x in [".KS", ".KQ", "-KRW"])
+                        fmt_entry = f"₩{entry_p:,.0f}원" if is_krw else f"${entry_p:,.2f}"
                         
                         ret_html = f"<span style='color:#ff4b4b; font-weight:bold;'>+{ret_val:.1f}%</span>" if ret_val > 0 else (f"<span style='color:#38bdf8; font-weight:bold;'>{ret_val:.1f}%</span>" if ret_val < 0 else "<span style='color:#94a3b8;'>0.0%</span>")
                         
@@ -4306,8 +4249,11 @@ with main_tab2:
                             <div style="font-size: 11px; color: #38bdf8; margin-bottom: 4px; font-weight: 600;">
                                 🏷️ 시그널: {item['signal']}
                             </div>
-                            <div style="font-size: 12px; color: #ffd700; margin-bottom: 6px; font-weight: bold;">
-                                📌 당시 예상 승률 / 예상 수익: <span style="color:#ffffff;">{exp_win:.1f}%</span> (<span style="color:#ff4b4b;">+{exp_ret:.1f}%</span>)
+                            <div style="font-size: 13px; color: #ffd700; margin-bottom: 6px; font-weight: bold;">
+                                🎯 당시 추천 진입가: <span style="color:#ffffff;">{fmt_entry}</span>
+                            </div>
+                            <div style="font-size: 12px; color: #e2e8f0; margin-bottom: 6px; font-weight: bold;">
+                                📌 당시 예상 승률 / 예상 수익: <span style="color:#38bdf8;">{exp_win:.1f}%</span> (<span style="color:#ff4b4b;">+{exp_ret:.1f}%</span>)
                             </div>
                             <div style="font-size: 13px; color: #e2e8f0; margin-bottom: 8px;">
                                 📈 <b>실전 매매 수익률:</b> {ret_html} <span style="font-size: 11px; color: #94a3b8;">(최고 도달 +{max_val:.1f}%)</span>
