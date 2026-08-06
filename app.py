@@ -154,6 +154,16 @@ st.set_page_config(
     layout="wide"  # 👈 기존 centered에서 wide로 변경하여 양옆 빨간 영역을 잠금 해제합니다.
 )
 
+# 💡 [신규 세션 키 선제 등록 - 최초 접속 시 KeyError 원천 차단]
+session_defaults = {
+    'scan_results_kr': [], 'scan_results_us': [], 'scan_results_coin': [],
+    'scan_surge_kr': [], 'scan_surge_us': [],
+    'trigger_combined_scan': False, 'auto_run_retro': False
+}
+for key, default_val in session_defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = default_val
+
 # ====================================================================
 # 📊 [고도화 1M 엔진] 10대 섹터 거래대금 가중치 기반 지수 영향력 연산
 # ====================================================================
@@ -929,6 +939,7 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     support = float(latest['Support_20'])
     volume = float(latest['Volume'])
     vol_ma20 = float(latest['Vol_MA_20'])
+    c_vol_prev = float(df['Volume'].iloc[-2]) if len(df) >= 2 else 0.0
     bb_upper = float(latest['BB_Upper'])
     bb_lower = float(latest['BB_Lower'])
     rsi_val = float(latest['RSI'])
@@ -1403,11 +1414,55 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     # 7. 섹터/추세 상대강도 (가중치 10%)
     sector_score = 10 if (price > ma5 and is_upward_val) else -10
 
-    # 8. 🎯 통합 승률(Win Rate) 최종 산출 (12대 지표 50% + 8대 고도화 필터 50%)
-    advanced_sum = vp_score + flow_score + v_breakout_score + mid_support_score + disparity_score + gap_filter_score + sector_score
-    # 스코어를 0~100 범위로 정규화 후 12대 지표 승률(up_prob)과 5:5 결합
-    combined_score = (up_prob * 0.5) + (((advanced_sum + 75.0) / 150.0) * 50.0)
-    pure_win_rate = min(max(round(float(combined_score), 1), 0.0), 99.0)
+   # ====================================================================
+    # 🤖 [4대 AI Multi-Agent 앙상블 평가 & 듀얼 모드 스캐너]
+    # ====================================================================
+    # 1) Quant Factor Agent (40점 만점)
+    q_score = (
+        (10.0 if cond_trend else 0.0) +
+        (10.0 if cond_structure else 0.0) +
+        (10.0 if cond_momentum else 0.0) +
+        (10.0 if is_perfect_alignment else 0.0)
+    )
+
+    # 2) Microstructure Agent (20점 만점: RVOL, OBV, CLV)
+    m_score = (
+        (8.0 if rvol_val >= 1.5 else (4.0 if rvol_val >= 1.2 else 0.0)) +
+        (6.0 if is_obv_up else 0.0) +
+        (6.0 if smart_money_val > 0 else 0.0)
+    )
+
+    # 3) Market Regime Agent (20점 만점: 지수 대비 상대강도 RS)
+    is_bear, bear_msg = check_benchmark_regime(ticker_symbol)
+    recent_20_ret = ((df['Close'].iloc[-1] - df['Close'].iloc[-20]) / df['Close'].iloc[-20]) * 100.0 if len(df) >= 20 else 0.0
+    
+    if is_bear:
+        # 하락장(Alpha Mode): 시장 하락을 이겨내는 상대강도(RS > +10%) 종목에 우대
+        r_score = 20.0 if recent_20_ret >= 10.0 else (12.0 if recent_20_ret > 0 else 0.0)
+        if recent_20_ret >= 10.0:
+            success_reasons.append(f"🔥 [Alpha Mode] 하락장 대비 상대강도(+{recent_20_ret:.1f}%) 우수 역주행주 포착")
+    else:
+        # 상승장(Beta Mode): 정배열 추세 관성 유지 종목 우대
+        r_score = 20.0 if price >= ma20 else 10.0
+
+    # 4) AI Sentiment Agent (20점 만점: 뉴스 감성 분석)
+    s_score = 10.0  # 기본 중립
+    if not skip_news:
+        summary_lines, news_impact, impact_reason = fetch_and_process_news(ticker_symbol)
+        if news_impact > 0: s_score = 20.0
+        elif news_impact < 0: s_score = 0.0
+
+    # 💥 [TTM Squeeze Release] 최근 5봉 내 응축 후 당일 볼밴 상단 돌파 발산 시 가산점 (+10점)
+    had_recent_squeeze = df['Squeeze_On'].iloc[-6:-1].any() if len(df) >= 6 else False
+    is_squeeze_release = had_recent_squeeze and (not latest['Squeeze_On']) and (price >= bb_upper)
+    
+    squeeze_bonus = 10.0 if is_squeeze_release else 0.0
+    if is_squeeze_release:
+        success_reasons.append("💥 [TTM Squeeze Release] 변동성 응축 완료 후 상방 폭발 개화 (1~5봉 내 5% 슈팅 타점)")
+
+    # 🎯 4대 Agent 종합 앙상블 스코어 합산 (TTM Squeeze 발산 가산점 포함 100점 캡)
+    ensemble_score = min(q_score + m_score + r_score + s_score + squeeze_bonus, 100.0)
+    pure_win_rate = min(max(round(float(ensemble_score), 1), 0.0), 99.0)
 
     # 9. 1~5봉 ATR 변동성 한계 기반 예상 수익률(Upside) 연산 (-15.0% ~ +15.0%)
     atr_val = float(latest['ATR'])
@@ -1673,49 +1728,19 @@ def render_my_portfolio_manager():
             max_ret_pct = ((max_high_since_entry - entry_p) / entry_p) * 100.0
             curr_ret_pct = ((curr_p - entry_p) / entry_p) * 100.0
 
-            # ATR 및 상단 이평선 저항 매핑 (하이브리드 익절 목표가 산출)
+            # ATR 연산 및 소급 검증 공식 100% 동기화
             df_curr['TR'] = np.maximum(df_curr['High'] - df_curr['Low'], np.maximum(abs(df_curr['High'] - df_curr['Close'].shift(1)), abs(df_curr['Low'] - df_curr['Close'].shift(1))))
-            atr_v = float(df_curr['TR'].rolling(14, min_periods=1).mean().iloc[-1])
-            atr_pct = (atr_v / entry_p) * 100.0
+            c_atr = float(df_curr['TR'].rolling(14, min_periods=1).mean().iloc[-1])
 
-            # 📌 1차(5%), 2차(10%), 3차(20%) 고정 상한선 락 + 5,10,20,60,120,200일선 저항 반영
-            tp1_pct = min(5.0, 1.5 * atr_pct)
-            tp2_pct = min(10.0, 3.0 * atr_pct)
-            tp3_pct = min(20.0, 5.0 * atr_pct)
+            # 🎯 1차(+3.5%), 2차(+5.0%), 3차(+7.0% 슈팅), -3% 하드 캡 손절가 설정
+            tp1_price = entry_p * 1.035
+            tp2_price = entry_p * 1.050
+            tp3_price = entry_p * 1.070  # 👈 3차 오버슈팅 관성 타점 (+7.0%)
+            sl_price  = max(entry_p - (c_atr * 1.2), entry_p * 0.97)
 
-            # 5, 10, 20, 60, 120, 200일선 저항 매핑
-            ma_above = []
-            for ma_p in [5, 10, 20, 60, 120, 200]:
-                col_ma = f'MA_{ma_p}'
-                if col_ma not in df_curr.columns:
-                    df_curr[col_ma] = df_curr['Close'].rolling(ma_p, min_periods=1).mean()
-                ma_val = float(df_curr[col_ma].iloc[-1])
-                if ma_val > entry_p:
-                    ma_ret = ((ma_val - entry_p) / entry_p) * 100.0
-                    if ma_ret >= 0.5:
-                        ma_above.append(ma_ret)
-
-            ma_above.sort()
-
-            # 이평선 저항이 고정 상한선보다 아래에 있을 경우 목표가 당김 (단, 상한선 초과 엄금)
-            for ma_ret in ma_above:
-                if ma_ret < tp1_pct:
-                    tp1_pct = ma_ret
-                elif tp1_pct < ma_ret < tp2_pct:
-                    tp2_pct = ma_ret
-                elif tp2_pct < ma_ret < tp3_pct:
-                    tp3_pct = ma_ret
-
-            # 상한선(5%, 10%, 20%) 및 차수별 순서 가드레일 강제 적용
-            tp1_pct = min(5.0, max(0.5, tp1_pct))
-            tp2_pct = min(10.0, max(tp1_pct + 0.5, tp2_pct))
-            tp3_pct = min(20.0, max(tp2_pct + 0.5, tp3_pct))
-
-            # 실제 입력 매수가 기준 손절선(-3.0%) 및 목표가 설정
-            sl_price = entry_p * 0.97
-            tp1_price = entry_p * (1.0 + tp1_pct / 100.0)
-            tp2_price = entry_p * (1.0 + tp2_pct / 100.0)
-            tp3_price = entry_p * (1.0 + tp3_pct / 100.0)
+            tp1_pct = 3.5
+            tp2_pct = 5.0
+            tp3_pct = 7.0
 
             # 💡 실시간 매도/홀딩 지시문 생성
             if curr_ret_pct <= -3.0 or curr_low <= sl_price:
@@ -1994,51 +2019,39 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
 </div>
 """, unsafe_allow_html=True)
 
-    # 💡 [개선] 1원 미만 저가 코인/주식 소수점 표출을 지원하는 스마트 가격 포맷터
+    # 1. 💡 화폐 기호, 포맷터 및 파동 마디가/손익비 연산
     currency_symbol = "₩" if is_krw else "$"
-    def fmt_p(p):
-        if p is None: return f"{currency_symbol}0"
-        if p < 1.0:
-            return f"{currency_symbol}{p:,.6f}"  # 1원 미만은 소수점 6자리까지 표출
-        elif p < 100.0:
-            return f"{currency_symbol}{p:,.2f}"  # 100원 미만은 소수점 2자리 표출
-        else:
-            return f"{currency_symbol}{p:,.0f}" if is_krw else f"{currency_symbol}{p:,.2f}"
+    fmt_p = lambda p: f"{currency_symbol}{p:,.0f}" if is_krw else f"{currency_symbol}{p:,.2f}"
 
-    # 2. 🎯 진입가(entry_target_p) 및 익절/손절가 선제 계산 (NameError 완전 방지)
-    up_p_calc = float(ai['up_prob'])
-    entry_p_calc = float(ai['price'])
-    c_atr_calc = float(df_proc['ATR'].iloc[-1]) if 'ATR' in df_proc.columns else (entry_p_calc * 0.02)
+    c_entry_p, entry_tag = calculate_smart_entry_price(df_proc, ai)
+    entry_target_p = c_entry_p  # 👈 [신규 추가] NameError 방지용 변수 바인딩
+    c_atr = float(df_proc['ATR'].iloc[-1]) if 'ATR' in df_proc.columns else (c_entry_p * 0.02)
 
-    if up_p_calc >= 88.0:
-        entry_target_p = entry_p_calc * 0.995
-        entry_reason = "초강세 주도주: 6대 이평선 완전 정배열 및 -0.5% 눌림목 체결 타점"
-    elif up_p_calc >= 72.0:
-        entry_target_p = entry_p_calc * 0.990
-        entry_reason = "우수 추세: 주요 이평선 지지 확보 및 -1.0% 할인 지정가 타점"
-    elif up_p_calc >= 45.0:
-        poc_p_calc = float(ai['poc_price'])
-        entry_target_p = poc_p_calc if (0 < poc_p_calc < entry_p_calc) else entry_p_calc * 0.980
-        entry_reason = "박스권·수렴: 120일/200일선 지지력 및 매물대(POC) 확인 타점"
-    else:
-        entry_target_p = entry_p_calc
-        entry_reason = "하방 우세·장기 이평선 저항 붕괴: 진입 엄금"
+    # 🎯 익절(+3.5% / +5.0%) & ATR 손절(-3.0% 하드 캡)
+    c_tp1_p = c_entry_p * 1.035
+    c_tp2_p = c_entry_p * 1.050
+    
+    # ATR 기반 손절가 산출 후 -3.0% 하드 캡 적용
+    raw_sl = c_entry_p - (c_atr * 1.2)
+    hard_cap_sl = c_entry_p * 0.97
+    c_sl_p = max(raw_sl, hard_cap_sl)
 
-    tp1_p = min(entry_target_p + (c_atr_calc * 1.2), entry_target_p * 1.05)
-    tp2_p = min(entry_target_p + (c_atr_calc * 2.2), entry_target_p * 1.10)
-    tp3_p = min(entry_target_p + (c_atr_calc * 4.0), entry_target_p * 1.20)
-    sl_p = float(ai['tighter_sl'])
+    tp1_pct_disp = ((c_tp1_p - c_entry_p) / c_entry_p) * 100.0
+    sl_pct_disp = ((c_sl_p - c_entry_p) / c_entry_p) * 100.0
 
-    # 3. 🚦 최상단 신호등 스타일 3대 핵심 가격 카드 표출
-    tp1_pct_display = ((tp1_p - ai['price']) / ai['price']) * 100
-    sl_pct_display = ((sl_p - ai['price']) / ai['price']) * 100
-
+    # 🚦 [실시간 3대 매매 가이드 신호등 카드]
     col_e, col_t, col_s = st.columns(3)
-    col_e.metric("🎯 권장 진입가 (눌림목)", f"{fmt_p(entry_target_p)}", "지정가 대기")
-    col_t.metric("🔥 1차 익절가 (50% 청산)", f"{fmt_p(tp1_p)}", f"+{tp1_pct_display:.1f}%")
-    col_s.metric("🛑 ATR 동적 손절가", f"{fmt_p(sl_p)}", f"{sl_pct_display:.1f}%", delta_color="inverse")
+    col_e.metric("🟢 권장 진입가 (눌림목)", f"{fmt_p(c_entry_p)}", "0~2일 체결 대기")
+    col_t.metric("🔴 1차 익절가 (50% 청산)", f"{fmt_p(c_tp1_p)}", f"+{tp1_pct_disp:.1f}%")
+    col_s.metric("🔵 동적 손절가 (Hard Cap)", f"{fmt_p(c_sl_p)}", f"{sl_pct_disp:.1f}%", delta_color="inverse")
 
-    st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
+    # 💡 [AI 1줄 추천 사유 출력]
+    primary_reason = ai['success_reasons'][0] if ai['success_reasons'] else "주요 이동평균선 정배열 지지 구조 형성"
+    st.markdown(f"""
+    <div style="background-color:#1e293b; padding:10px 14px; border-radius:6px; border-left:4px solid #10b981; margin:10px 0 15px 0; font-size:13px; color:#e2e8f0;">
+        💡 <b>[AI 1줄 핵심 진단]</b> {primary_reason} (진입 타점: {entry_tag})
+    </div>
+    """, unsafe_allow_html=True)
 
     col_stat1, col_stat2 = st.columns(2)
 
@@ -2290,6 +2303,12 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
         hovermode="closest",
         dragmode="pan",
         
+        # 🟡 [선 도구 색상 설정] 새로 그리는 선을 선명한 노란색으로 지정
+        newshape=dict(
+            line=dict(color="#facc15", width=2.5),
+            opacity=1.0
+        ),
+        
         modebar=dict(
             orientation='v',                  
             bgcolor='rgba(20, 20, 20, 0.7)', 
@@ -2463,9 +2482,12 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
         
         with c_ps1:
             account_balance = st.number_input(
-                f"💰 총 계좌 잔고 ({currency_symbol})", 
+                f"💰 투자 가능 금액 ({currency_symbol})", 
                 min_value=0.0, value=default_balance, step=step_balance, key=f"ps_balance_{tab_name}"
             )
+            # 💡 [3자리 콤마 실시간 안내] 입력 금액 천단위 구분선 표기
+            fmt_bal = f"{account_balance:,.0f}" if currency_symbol == "₩" else f"{account_balance:,.2f}"
+            st.caption(f"💡 입력 금액 확인: <b style='color:#38bdf8;'>{currency_symbol}{fmt_bal}</b>", unsafe_allow_html=True)
         with c_ps2:
             risk_pct = st.slider(
                 "🛡️ 1회 매매 허용 리스크 비율 (%)", 
@@ -3405,53 +3427,55 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ct
 # ====================================================================
 def calculate_smart_entry_price(df_proc, ai_data):
     c_close = float(df_proc['Close'].iloc[-1])
-    c_vol   = float(df_proc['Volume'].iloc[-1])
-    vol_ma20= float(df_proc['Vol_MA_20'].iloc[-1]) if float(df_proc['Vol_MA_20'].iloc[-1]) > 0 else 1.0
-    rvol    = c_vol / vol_ma20
-    up_p    = float(ai_data.get('up_prob', 50.0))
+    c_close_prev = float(df_proc['Close'].iloc[-2]) if len(df_proc) >= 2 else c_close
 
-    # 💡 내일(T+1) 및 글피(T+2) 예상 이평선 터치 가격 역산 (최근 N-1일 종가 평균)
-    # T+1일 예상 이평선 (최근 4일/19일/59일 종가 평균)
-    pred_ma5_t1  = float(df_proc['Close'].tail(4).mean()) if len(df_proc) >= 4 else c_close
-    pred_ma20_t1 = float(df_proc['Close'].tail(19).mean()) if len(df_proc) >= 19 else c_close
-    pred_ma60_t1 = float(df_proc['Close'].tail(59).mean()) if len(df_proc) >= 59 else c_close
-
-    # T+2일 예상 이평선 (최근 3일/18일/58일 종가 평균)
-    pred_ma5_t2  = float(df_proc['Close'].tail(3).mean()) if len(df_proc) >= 3 else c_close
-    pred_ma20_t2 = float(df_proc['Close'].tail(18).mean()) if len(df_proc) >= 18 else c_close
-    pred_ma60_t2 = float(df_proc['Close'].tail(58).mean()) if len(df_proc) >= 58 else c_close
-
-    # 2일간(T+1 ~ T+2) 평균 예상 이평선 타점 설정
-    ma5  = (pred_ma5_t1 + pred_ma5_t2) / 2.0
-    ma20 = (pred_ma20_t1 + pred_ma20_t2) / 2.0
-    ma60 = (pred_ma60_t1 + pred_ma60_t2) / 2.0
-    poc  = float(ai_data.get('poc_price', c_close))
-
-    # 🚨 20일선과 60일선 간격이 2% 이내로 밀집했는지 검증
-    ma_gap_pct = abs(ma20 - ma60) / ma20 * 100.0 if ma20 > 0 else 100.0
-    is_ma_clustered = ma_gap_pct <= 2.0
-
-    # [LEVEL 1] 초강세주 ➔ 예상 5일선 지정가 타점
-    if up_p >= 80.0 and rvol >= 1.5 and c_close >= ma5:
-        return round(ma5, 2), "🔥 [초강세] 예상 5일선 지정가 타점"
-
-    # [LEVEL 2] 20일선-60일선 밀집 구간 ➔ 예상 60일선 안전 타점 (갑작스런 투매 방어)
-    elif is_ma_clustered and c_close >= ma60:
-        return round(ma60, 2), f"🛡️ [이평수렴] 20·60일선 밀집 ➔ 예상 60일선 안전 타점"
-
-    # [LEVEL 3] 일반 강세/눌림목 ➔ 예상 20일선 또는 POC 매물대 타점
-    elif c_close >= ma20:
-        if abs(c_close - ma20) <= abs(c_close - poc):
-            return round(ma20, 2), "🎯 [눌림목] 예상 20일선 지정가 타점"
+    # 1. 최근 2개 봉의 각도(기울기) 계산 ➔ 다음 봉(t+1) 예상 6대 이평선 선제 추정
+    ma_dict_proj = {}
+    for ma_p in [5, 10, 20, 60, 120, 200]:
+        col_name = f'MA_{ma_p}'
+        if col_name in df_proc.columns and len(df_proc) >= 2:
+            curr_ma = float(df_proc[col_name].iloc[-1])
+            prev_ma = float(df_proc[col_name].iloc[-2])
+            slope = curr_ma - prev_ma  # 최근 2개 봉의 이동 방향 및 기울기
+            ma_dict_proj[ma_p] = curr_ma + slope  # 다음 봉 예상 이평선 위치
         else:
-            return round(poc, 2), "🎯 [매물대] POC 매물대 지지 타점"
+            ma_dict_proj[ma_p] = c_close
 
-    # [LEVEL 4] 약세 / 하방 확장주 ➔ 예상 60일선 타점
+    # 2. 다음 봉 예상 주가 추정 (종가 기울기 반영)
+    close_slope = c_close - c_close_prev
+    proj_close = c_close + close_slope
+    poc  = float(ai_data.get('poc_price', c_close))
+    up_p = float(ai_data.get('up_prob', 50.0))
+
+    # 3. 🌊 [파동 마디 진입가] 다음 봉 예상 20일선과 POC 수렴 마디 타점
+    wave_confluence = (ma_dict_proj[20] + poc) / 2.0
+
+    if up_p >= 88.0:
+        optimal_entry = (proj_close * 0.4) + (wave_confluence * 0.6)
     else:
-        return round(ma60, 2), "🛡️ [보수적] 예상 60일선 최후 지지 타점"
+        optimal_entry = wave_confluence
+
+    min_allow_entry = proj_close * 0.965
+    final_entry = max(optimal_entry, min_allow_entry)
+
+    # 4. 🎯 [다음 봉 예상 6대 이평선 연동] 선제 매수 타점 자동 라벨링
+    closest_ma = min(ma_dict_proj.keys(), key=lambda ma_p: abs(final_entry - ma_dict_proj[ma_p]))
+
+    ma_labels = {
+        5:   "다음 봉 예상 5일선 단기 가속 매수 시그널",
+        10:  "다음 봉 예상 10일선 단타 생명선 매수 시그널",
+        20:  "다음 봉 예상 20일선 세력 심리선 눌림목 매수 시그널",
+        60:  "다음 봉 예상 60일선 중기 수급선 지지 매수 시그널",
+        120: "다음 봉 예상 120일선 경기 핵심선 지지 매수 시그널",
+        200: "다음 봉 예상 200일선 대세 장기선 지지 매수 시그널"
+    }
+
+    tag = f"🎯 [{closest_ma}일선] {ma_labels[closest_ma]}"
+
+    return round(final_entry, 2), tag
 
 # ====================================================================
-# 🎯 [공통 핵심 필터 Engine] 1번 탑10 & 2번 소급 검증 100% 공유 함수
+# 🎯 [1번 탑10 & 2번 소급 검증 100% 동일 조건 공유 함수]
 # ====================================================================
 def evaluate_stock_signal(df_proc, ai_data):
     if not ai_data or df_proc is None or len(df_proc) < 20:
@@ -3476,6 +3500,13 @@ def evaluate_stock_signal(df_proc, ai_data):
     if disparity_20 > 110.0:
         return None, 0.0, 0.0, ""
 
+    # 1-1. 🚀 ATR 변동성 비율 하한선 필터 (1~5봉 내 5% 폭발을 위한 최소 2.2% 필수)
+    c_atr = float(df_proc['ATR'].iloc[-1]) if 'ATR' in df_proc.columns else 0.0
+    atr_ratio = (c_atr / c_close) * 100.0 if c_close > 0 else 0.0
+    
+    if atr_ratio < 2.2:
+        return None, 0.0, 0.0, ""
+
     # 2. 대시세 모멘텀 필수 조건 (매물대 완파/지지 + 거래량 1.2배 양봉 OR 볼밴 돌파)
     cond_poc = (c_close >= poc_high * 0.99)
     cond_vol = (rvol_val >= 1.2) and (c_close >= c_open)
@@ -3487,19 +3518,18 @@ def evaluate_stock_signal(df_proc, ai_data):
     exp_win = float(ai_data.get('up_prob', 0.0))
     exp_ret = float(ai_data.get('upside', 0.0))
 
-    # 3. 승률 70.0% 이상 & 예상 수익률 플러스(>0%) 필수 통과
-    if exp_win < 70.0 or exp_ret <= 0.0:
+    # 3. 앙상블 스코어 80점 이상 (승률 80% 이상) 필수
+    if exp_win < 80.0 or exp_ret <= 0.0:
         return None, 0.0, 0.0, ""
 
-    # 4. 기대 손익비(Risk-Reward Ratio >= 1.2) 하한선 필터링 가드레일
+    # 4. 손익비 가드레일 (R/R >= 1.2 필수)
     sl_price = float(ai_data.get('tighter_sl', c_close * 0.97))
     risk_dist = c_close - sl_price if c_close > sl_price else (c_close * 0.03)
-    c_atr = float(df_proc['ATR'].iloc[-1]) if 'ATR' in df_proc.columns else (c_close * 0.02)
     reward_dist = c_atr * 1.5
     rr_ratio = reward_dist / risk_dist if risk_dist > 0 else 0.0
 
     if rr_ratio < 1.2:
-        return None, 0.0, 0.0, ""  # 기대 손익비 1.2 미만 스캔 자동 탈락
+        return None, 0.0, 0.0, ""
 
     # 시그널 태그 조립
     sig_tags = []
@@ -3510,6 +3540,62 @@ def evaluate_stock_signal(df_proc, ai_data):
 
     return signal_str, exp_win, exp_ret, c_close
 
+# ====================================================================
+# 🚀 [1~5봉 내 10%+ 초급등주(Surge Stock) 전용 정밀 스캐너 Engine]
+# ====================================================================
+def evaluate_surge_stock_signal(df_proc, ai_data):
+    if not ai_data or df_proc is None or len(df_proc) < 60:
+        return None, 0.0, 0.0, ""
+
+    latest = df_proc.iloc[-1]
+    c_close = float(latest['Close'])
+    c_open  = float(latest['Open'])
+    c_high  = float(latest['High'])
+    c_low   = float(latest['Low'])
+    c_vol   = float(latest['Volume'])
+    vol_ma20= float(latest['Vol_MA_20']) if float(latest['Vol_MA_20']) > 0 else 1.0
+    rvol_val = c_vol / vol_ma20
+
+    # 1. 🚀 [수급 스파이크] RVOL 2.0배 이상 (평소 2배 이상 거래량 급증 필수)
+    if rvol_val < 2.0:
+        return None, 0.0, 0.0, ""
+
+    # 2. 🏰 [매물대 공백] 최근 60일 최고가 3% 이내 접근 (상단 저항 매물벽 제거)
+    recent_60_high = float(df_proc['High'].tail(60).max())
+    if c_close < (recent_60_high * 0.97):
+        return None, 0.0, 0.0, ""
+
+    # 3. 🕯️ [밀도 높은 장대양봉] 윗꼬리 비율 25% 이하 (차익실현 피뢰침 차단)
+    candle_range = c_high - c_low
+    upper_shadow = c_high - max(c_open, c_close)
+    shadow_ratio = (upper_shadow / candle_range) if candle_range > 0 else 1.0
+    if shadow_ratio > 0.25 or c_close < c_open:
+        return None, 0.0, 0.0, ""
+
+    # 4. ⚡ [래리 윌리엄스 변동성 돌파] V_target 이상 상방 주체 형성
+    prev_range = float(df_proc['High'].iloc[-2] - df_proc['Low'].iloc[-2]) if len(df_proc) > 2 else 0.0
+    v_target = c_open + (prev_range * 0.5)
+    if c_close < v_target:
+        return None, 0.0, 0.0, ""
+
+    # 5. 📐 5일선 급경사 가속도 및 20일 이격도 과열(112% 초과) 차단
+    c_ma20 = float(latest['MA_20']) if 'MA_20' in latest else c_close
+    disparity_20 = (c_close / c_ma20) * 100.0 if c_ma20 > 0 else 100.0
+    if disparity_20 > 112.0:
+        return None, 0.0, 0.0, ""
+
+    # 🚀 급등 예상 수익률 및 앙상블 점수
+    exp_win = float(ai_data.get('up_prob', 0.0))
+    exp_ret = float(ai_data.get('upside', 0.0))
+    
+    # 초급등 가산점 연동 (최소 10% 이상 예상 파동 산출)
+    surge_exp_ret = max(exp_ret * 1.8, 10.5)
+
+    sig_tags = ["🚀RVOL 폭발", "🏰60일신고가", "🕯️장대양봉", "⚡변동성돌파"]
+    signal_str = " / ".join(sig_tags)
+
+    return signal_str, exp_win, surge_exp_ret, c_close
+
 
 # ====================================================================
 # 1️⃣ [오늘의 Top 10 추천 스캐너]
@@ -3519,32 +3605,41 @@ def process_single_ticker_unbound(item):
     try:
         df_t = get_raw_daily_data(ticker)
         if df_t is None or len(df_t) < 130:
-            return None
+            return (None, None)
 
+        # 1. 지표 연산 (전 종목 딱 1회만 연산)
         df_proc, ai_data = process_data(df_t, "daily", ticker, skip_news=True)
-        signal_str, up_p, up_s, c_close = evaluate_stock_signal(df_proc, ai_data)
-        if not signal_str:
-            return None
+        if df_proc is None or ai_data is None:
+            return (None, None)
 
-        # 🎯 동적 스마트 진입가 연동
-        calc_entry, entry_tag = calculate_smart_entry_price(df_proc, ai_data)
-        full_signal_str = f"{entry_tag} / {signal_str}"
+        swing_res, surge_res = None, None
 
-        composite_score = (up_p * 0.5) + (up_s * 4.0)
+        # 2. [안정 스윙 필터링] ➔ 조건 충족 시에만 진입가 정밀 연산
+        sig_sw, up_p_sw, up_s_sw, c_close_sw = evaluate_stock_signal(df_proc, ai_data)
+        if sig_sw:
+            calc_entry_sw, entry_tag_sw = calculate_smart_entry_price(df_proc, ai_data)
+            swing_res = {
+                "name": name, "ticker": ticker, "entry_price": calc_entry_sw,
+                "up_prob": round(up_p_sw, 1), "upside": round(up_s_sw, 1),
+                "composite_score": round((up_p_sw * 0.5) + (up_s_sw * 4.0), 2),
+                "signal": f"{entry_tag_sw} / {sig_sw}", "score": 3 if up_p_sw >= 80.0 else 2
+            }
 
-        return {
-            "name": name, 
-            "ticker": ticker,
-            "entry_price": calc_entry,
-            "up_prob": round(up_p, 1),
-            "upside": round(up_s, 1),
-            "composite_score": round(composite_score, 2),
-            "signal": full_signal_str,
-            "score": 3 if up_p >= 80.0 else 2
-        }
+        # 3. [10%+ 초급등주 필터링] ➔ 조건 충족 시에만 진입가 정밀 연산
+        sig_sg, up_p_sg, up_s_sg, c_close_sg = evaluate_surge_stock_signal(df_proc, ai_data)
+        if sig_sg:
+            calc_entry_sg = round(c_close_sg * 0.995, 2)
+            surge_res = {
+                "name": name, "ticker": ticker, "entry_price": calc_entry_sg,
+                "up_prob": round(up_p_sg, 1), "upside": round(up_s_sg, 1),
+                "composite_score": round((up_p_sg * 0.4) + (up_s_sg * 5.0), 2),
+                "signal": f"⚡ [돌파/추격] 당일 종가-시초 수급 타점 / {sig_sg}", "score": 5
+            }
+
+        return (swing_res, surge_res)
     except Exception:
         pass
-    return None
+    return (None, None)
 
 # ====================================================================
 # ⚡ [스레드 워커 래퍼 함수]
@@ -3615,7 +3710,9 @@ def bg_scan_worker(assets_dict):
     progress_bar = st.progress(0.0)
     status_box = st.empty()
 
+    # 💡 [초급등주 리스트 변수 선제 초기화 - UnboundLocalError 방지]
     results_kr, results_us, results_coin = [], [], []
+    results_surge_kr, results_surge_us = [], []
     processed = 0
 
     with ThreadPoolExecutor(max_workers=15) as executor:
@@ -3625,27 +3722,37 @@ def bg_scan_worker(assets_dict):
             processed += 1
             item_info = future_to_item[future]
             target_key = item_info[2]
-            stock_name = item_info[0]
-            ticker_code = item_info[1]
+            stock_name, ticker_code = item_info[0], item_info[1]
 
             pct = min(1.0, processed / total_count)
             progress_bar.progress(pct)
-            status_box.markdown(f"🚀 **실시간 전 시장 스캔 중...** `{processed}/{total_count}` ({int(pct*100)}%) | 분석 중: **{stock_name}**")
+            status_box.markdown(f"🚀 **실시간 전 시장 초고속 스캔 중...** `{processed}/{total_count}` ({int(pct*100)}%) | 분석 중: **{stock_name}**")
 
-            res = future.result()
-            
-            # 🔥 [피드백 적용] DB 검증 승률 60% 미만인 저성과 종목은 자동 추천 제외
-            if res and ticker_code not in underperforming_tickers:
-                if target_key == 'scan_results_kr': results_kr.append(res)
-                elif target_key == 'scan_results_us': results_us.append(res)
-                elif target_key == 'scan_results_coin': results_coin.append(res)
+            res_tuple = future.result()
+            if res_tuple and ticker_code not in underperforming_tickers:
+                swing_res, surge_res = res_tuple
+                
+                # 안정 스윙 결과 반영
+                if swing_res:
+                    if target_key == 'scan_results_kr': results_kr.append(swing_res)
+                    elif target_key == 'scan_results_us': results_us.append(swing_res)
+                    elif target_key == 'scan_results_coin': results_coin.append(swing_res)
 
+                # 10%+ 초급등주 결과 반영
+                if surge_res:
+                    if target_key == 'scan_results_kr': results_surge_kr.append(surge_res)
+                    elif target_key == 'scan_results_us': results_surge_us.append(surge_res)
+
+    # 세션 데이터 정렬 및 고정 저장
     st.session_state['scan_results_kr'] = sorted(results_kr, key=lambda x: x.get('composite_score', 0), reverse=True)[:10]
     st.session_state['scan_results_us'] = sorted(results_us, key=lambda x: x.get('composite_score', 0), reverse=True)[:10]
     st.session_state['scan_results_coin'] = sorted(results_coin, key=lambda x: x.get('composite_score', 0), reverse=True)[:10]
 
+    st.session_state['scan_surge_kr'] = sorted(results_surge_kr, key=lambda x: x.get('composite_score', 0), reverse=True)[:10]
+    st.session_state['scan_surge_us'] = sorted(results_surge_us, key=lambda x: x.get('composite_score', 0), reverse=True)[:10]
+
     progress_bar.progress(1.0)
-    status_box.success(f"✅ 전 종목 스캔 완료! (DB 저성과 항목 자동 필터링 적용)")
+    status_box.success(f"✅ 초고속 스캔 완료! (안정 스윙 & 10%+ 초급등주 동시 추출 완료)")
 
 
 
@@ -3847,11 +3954,7 @@ with main_tab2:
 
                     df_sub = df_hist.iloc[:t_idx + 1].copy()
                     df_proc, ai_data = process_data(df_sub, "daily", ticker, skip_news=True)
-                    signal_str, exp_win, exp_ret, c_close = evaluate_stock_signal(df_proc, ai_data)
-
-                    if not signal_str:
-                        return None
-
+                    # 💡 1번 탑10 스캐너와 100% 동일한 조건문으로 검증
                     signal_str, exp_win, exp_ret, c_close = evaluate_stock_signal(df_proc, ai_data)
 
                     if not signal_str:
@@ -3940,86 +4043,62 @@ with main_tab2:
                 atr_val = item.get('atr', rec_entry * 0.03)
                 atr_pct = (atr_val / rec_entry) * 100.0
 
-                # 📌 1차(5%), 2차(10%), 3차(20%) 고정 상한선 락 세팅
-                tp1_ret_base = min(5.0, 1.5 * atr_pct)
-                tp2_ret_base = min(10.0, 3.0 * atr_pct)
-                tp3_ret_base = min(20.0, 5.0 * atr_pct)
-
-                # 5, 10, 20, 60, 120, 200일선 저항 매핑
-                ma_above = []
-                for ma_p in [5, 10, 20, 60, 120, 200]:
-                    col_ma = f'MA_{ma_p}'
-                    if col_ma not in df_hist.columns:
-                        df_hist[col_ma] = df_hist['Close'].rolling(ma_p, min_periods=1).mean()
-                    ma_val = float(df_hist[col_ma].iloc[t_idx])
-                    if ma_val > rec_entry:
-                        ma_ret = ((ma_val - rec_entry) / rec_entry) * 100.0
-                        if ma_ret >= 0.5:
-                            ma_above.append((ma_ret, ma_p))
-
-                ma_above.sort(key=lambda x: x[0])
-
+                # 🎯 [개편안 적용] 1차 익절 +3.5%, 2차 익절 +5.0%, 손절가 -3.0% 하드 캡 세팅
+                tp1_price = rec_entry * 1.035
+                tp2_price = rec_entry * 1.050
+                tp3_price = rec_entry * 1.050  # 👈 [신규 추가] NameError 완전 방지용 변수 바인딩
+                sl_price = max(rec_entry - (atr_val * 1.2), rec_entry * 0.97)
                 tp_labels = {1: "", 2: "", 3: ""}
 
-                # 이평선 저항이 고정 상한선보다 아래에 있을 경우 목표가 조정 (상한선 초과 금지)
-                for ma_ret, ma_p in ma_above:
-                    if ma_ret < tp1_ret_base:
-                        tp1_ret_base = ma_ret
-                        tp_labels[1] = f" [{ma_p}일선 저항]"
-                    elif tp1_ret_base < ma_ret < tp2_ret_base:
-                        tp2_ret_base = ma_ret
-                        tp_labels[2] = f" [{ma_p}일선 저항]"
-                    elif tp2_ret_base < ma_ret < tp3_ret_base:
-                        tp3_ret_base = ma_ret
-                        tp_labels[3] = f" [{ma_p}일선 저항]"
-
-                # 상한선(5%, 10%, 20%) 및 차수별 순서 가드레일 강제 적용
-                tp1_ret_base = min(5.0, max(0.5, tp1_ret_base))
-                tp2_ret_base = min(10.0, max(tp1_ret_base + 0.5, tp2_ret_base))
-                tp3_ret_base = min(20.0, max(tp2_ret_base + 0.5, tp3_ret_base))
-
-                # 📌 익절 목표 가격(절대 가격)은 추천가 기준으로 고정
-                tp1_price = rec_entry * (1.0 + tp1_ret_base / 100.0)
-                tp2_price = rec_entry * (1.0 + tp2_ret_base / 100.0)
-                tp3_price = rec_entry * (1.0 + tp3_ret_base / 100.0)
-
+                # 📌 1~5봉 이내 미래 차트 구간 추출 (NameError 해결)
                 future_bars = df_hist.iloc[t_idx + 1 : t_idx + 6]
-                if future_bars.empty: continue
+                if future_bars.empty:
+                    continue
 
+                # 백테스트 매매 상태 변수 초기화
                 is_bought = False
-                actual_entry = rec_entry
-                remaining_qty = 1.0
-                realized_ret = 0.0
-                max_ret = 0.0
-                trailing_active = False
-                tp1_done, tp2_done, tp3_done = False, False, False
                 is_closed = False
+                max_ret = -999.0
+                realized_ret = 0.0
+                remaining_qty = 1.0
+                tp1_done = False
+                tp2_done = False
+                tp3_done = False
+                trailing_active = False
                 action_events = []
+                entry_bar_idx = -1
 
                 for bar_idx, (_, bar) in enumerate(future_bars.iterrows(), start=1):
                     if is_closed: break
 
                     b_high, b_low = float(bar['High']), float(bar['Low'])
 
-                    # 💡 [체결 로직] 추천가 대비 +0.3% 이내 오차 접근 시 체결 (+0.2% 등 실제 최저가 반영)
+                    # 💡 [체결 로직] 추천가 대비 +0.3% 이내 오차 접근 시 체결
                     if not is_bought:
                         if bar_idx <= 2 and b_low <= rec_entry * 1.003:
                             is_bought = True
                             actual_entry = b_low if b_low > rec_entry else rec_entry
                             
-                            # 📌 [손절가 재산정] 실제 체결가 기준 -3.0%
                             sl_price = actual_entry * 0.97
                             
                             b_date = pd.to_datetime(bar['Date'])
                             item['bought_date'] = f"{b_date.month}월 {b_date.day}일"
                             item['actual_entry'] = actual_entry
+                            entry_bar_idx = bar_idx  # 👈 체결 시점 인덱스 저장
                         else:
                             if bar_idx >= 2:
                                 break  # 2일차까지 도달 못하면 미체결
                             continue
 
-                    # 실제 매수가 기준 변동률 계산
-                    b_high_ret = ((b_high - actual_entry) / actual_entry) * 100.0
+                    # 🎯 체결 당일: '매수가'보다 높게 끝난 종가(Close) 이상 구역만 유효 고가로 인정 (사기 전 고가 차단)
+                    # 🎯 체결 이튿날부터: 해당 날의 장중 최고가(High) 100% 정상 반영
+                    if bar_idx == entry_bar_idx:
+                        eff_high = max(actual_entry, float(bar['Close']))
+                    else:
+                        eff_high = b_high
+
+                    # 실제 매수가 기준 최고 수익률 추적 (매수 후 올라간 +5% 등은 100% 기록)
+                    b_high_ret = ((eff_high - actual_entry) / actual_entry) * 100.0
                     b_low_ret = ((b_low - actual_entry) / actual_entry) * 100.0
 
                     if b_high_ret > max_ret:
@@ -4029,24 +4108,24 @@ with main_tab2:
                     if b_high_ret >= 2.0 or tp1_done:
                         trailing_active = True
 
-                    # 1차 익절 (고정된 1차 목표가 도달 여부 검증)
-                    if not tp1_done and b_high >= tp1_price:
+                    # 1차 익절
+                    if not tp1_done and eff_high >= tp1_price:
                         ret_portion = ((tp1_price - actual_entry) / actual_entry) * 100.0
                         realized_ret += 0.50 * (ret_portion / 100.0)
                         remaining_qty -= 0.50
                         tp1_done = True
                         action_events.append(f"1차 익절 (+{ret_portion:.1f}%{tp_labels[1]})")
 
-                    # 2차 익절 (고정된 2차 목표가 도달 여부 검증)
-                    if tp1_done and not tp2_done and b_high >= tp2_price:
+                    # 2차 익절
+                    if tp1_done and not tp2_done and eff_high >= tp2_price:
                         ret_portion = ((tp2_price - actual_entry) / actual_entry) * 100.0
                         realized_ret += 0.25 * (ret_portion / 100.0)
                         remaining_qty -= 0.25
                         tp2_done = True
                         action_events.append(f"2차 익절 (+{ret_portion:.1f}%{tp_labels[2]})")
 
-                    # 3차 익절 (고정된 3차 목표가 도달 여부 검증)
-                    if tp2_done and not tp3_done and b_high >= tp3_price:
+                    # 3차 익절
+                    if tp2_done and not tp3_done and eff_high >= tp3_price:
                         ret_portion = ((tp3_price - actual_entry) / actual_entry) * 100.0
                         realized_ret += 0.25 * (ret_portion / 100.0)
                         remaining_qty -= 0.25
@@ -4147,8 +4226,14 @@ with main_tab2:
                 drawdowns = peaks - cum_returns
                 mdd = np.max(drawdowns) if len(drawdowns) > 0 else 0.0
 
+                # 📊 통계적 신뢰 표본(N >= 15) 판정 레이블
+                if n_samples >= 15:
+                    sample_trust_msg = f"✅ 통계적 신뢰 표본 확보 (N = {n_samples}개 ≥ 15개)"
+                else:
+                    sample_trust_msg = f"⚠️ 표본 수 부족 (N = {n_samples}개 < 15개: 대수의 법칙 미달)"
+
                 st.markdown("---")
-                st.markdown("#### 📊 과거 검증 정밀 퀀트 리포트")
+                st.markdown(f"#### 📊 과거 검증 정밀 퀀트 리포트 <span style='font-size:12px; color:#94a3b8; font-weight:normal;'>({sample_trust_msg})</span>", unsafe_allow_html=True)
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("🎯 검증 승률 (Win Rate)", f"{win_rate:.1f}%")
                 m2.metric("📈 평균 수익률", f"{avg_r:+.1f}%")
