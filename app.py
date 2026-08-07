@@ -3491,7 +3491,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # ====================================================================
-# 🎯 [모멘텀 둔화 감지 ➔ 10/20일선 깊은 눌림 대기] 정밀 진입가 Engine
+# 🎯 [모멘텀 둔화 감지 ➔ 20일선/10일선 깊은 눌림 대기] 정밀 진입가 Engine
 # ====================================================================
 def calculate_smart_entry_price(df_proc, ai_data):
     c_close = float(df_proc['Close'].iloc[-1])
@@ -3506,31 +3506,37 @@ def calculate_smart_entry_price(df_proc, ai_data):
     ma5   = float(df_proc['MA_5'].iloc[-1])   if 'MA_5' in df_proc.columns else c_close
     ma10  = float(df_proc['MA_10'].iloc[-1])  if 'MA_10' in df_proc.columns else c_close
     ma20  = float(df_proc['MA_20'].iloc[-1])  if 'MA_20' in df_proc.columns else c_close
+
+    # 💡 [컬럼 유연 대조] MACD 컬럼명 대소문자 불일치 차단 및 모멘텀 꺾임 정밀 감지
+    macd_col = next((col for col in ['MACD_Hist', 'MACD_hist', 'macd_hist', 'MACD'] if col in df_proc.columns), None)
     
-    # 💡 MACD 히스토그램 꺾임(모멘텀 둔화) 여부 정밀 감지
-    macd_hist_curr = float(df_proc['MACD_Hist'].iloc[-1]) if 'MACD_Hist' in df_proc.columns else 0.0
-    macd_hist_prev = float(df_proc['MACD_Hist'].iloc[-2]) if 'MACD_Hist' in df_proc.columns and len(df_proc) >= 2 else macd_hist_curr
-    is_momentum_fading = (macd_hist_curr < macd_hist_prev)
+    if macd_col and len(df_proc) >= 2:
+        h_curr = float(df_proc[macd_col].iloc[-1])
+        h_prev = float(df_proc[macd_col].iloc[-2])
+        is_momentum_fading = (h_curr < h_prev)
+    else:
+        # MACD 컬럼이 없거나 예외 시 음봉 여부로 모멘텀 둔화 판별
+        is_momentum_fading = (df_proc['Close'].iloc[-1] < df_proc['Open'].iloc[-1])
 
     disparity_ma5 = (c_close / ma5) * 100.0 if ma5 > 0 else 100.0
 
     # ------------------------------------------------------------
-    # 🚀 1. 수급 폭발주 (RVOL 2.0배 이상 & 5일선 강한 이격 & 모멘텀 유지)
+    # 🚀 1. 수급 폭발주 (RVOL 2.0배 이상 & 모멘텀 살아있음)
     # ------------------------------------------------------------
     if rvol >= 2.0 and disparity_ma5 >= 102.5 and not is_momentum_fading:
         final_entry = max(c_close * 0.988, min(c_close * 0.993, c_close * 0.990))
         tag = "🚀 [수급폭발] 타이트 눌림 진입"
 
     # ------------------------------------------------------------
-    # 📉 2. 모멘텀 둔화주 (MACD 꺾임) ➔ 10일선 / 20일선 깊은 지지 대기
+    # 📉 2. 모멘텀 둔화주 (MACD/음봉 꺾임) ➔ 20일선 우선 지정 (20일선 지지)
     # ------------------------------------------------------------
     elif is_momentum_fading:
-        if ma10 < c_close:
-            final_entry = ma10
-            tag = "🎯 [실제 10일선] 깊은 눌림 지지 진입"
-        elif ma20 < c_close:
+        if ma20 < c_close and ma20 > 0:
             final_entry = ma20
             tag = "🎯 [실제 20일선] 세력 심리선 지지 진입"
+        elif ma10 < c_close and ma10 > 0:
+            final_entry = ma10
+            tag = "🎯 [실제 10일선] 깊은 눌림 지지 진입"
         else:
             final_entry = c_close * 0.980
             tag = "🎯 [단기 깊은눌림] 지정가 진입"
