@@ -4299,9 +4299,9 @@ with main_tab2:
                     is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
                     fmt_p = lambda p: f"₩{p:,.0f}" if is_krw else f"${p:,.2f}"
 
-                    # 🔥 수익률 빨간색 하이라이트 태그
-                    red_open_ret = f"<span style='color:#ff4b4b; font-weight:bold;'>+{open_potential_ret:.1f}%</span>"
-                    red_low_ret  = f"<span style='color:#ff4b4b; font-weight:bold;'>+{potential_ret:.1f}%</span>"
+                    # 🔥 HTML 태그 없이 순수 한국어 마크다운 강조 적용
+                    red_open_ret = f":red[**+{open_potential_ret:.1f}%**]"
+                    red_low_ret  = f":red[**+{potential_ret:.1f}%**]"
 
                     # 1. 지지 받은 이동평균선 및 차트 분석
                     if abs(min_2b_low - ma5_val) / ma5_val < 0.015:
