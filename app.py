@@ -4269,7 +4269,7 @@ with main_tab2:
                         break
 
                 # ------------------------------------------------------------
-                # ⚪ [미체결 정밀 분석 ENGINE - 지지 이평선/체결 타점/빨간색 최고 수익률 반영]
+                # ⚪ [미체결 전문 분석 ENGINE - 날짜 보정 / 순수 HTML 포맷 교정본]
                 # ------------------------------------------------------------
                 if not is_bought:
                     item['is_bought'] = False
@@ -4281,9 +4281,9 @@ with main_tab2:
                     min_2b_low = float(future_bars.iloc[:2]['Low'].min())
                     max_5b_high = float(future_bars['High'].max())
                     
-                    # 날짜 추출 (체결 가능 시점)
+                    # 💡 [날짜 보정] 체결일(추천 다음 영업일) 날짜를 시차 오차 없이 정확 추출
                     raw_b_date = future_bars.iloc[0]['Date']
-                    dt_obj = pd.to_datetime(raw_b_date, format='mixed', errors='coerce') if isinstance(raw_b_date, str) else pd.to_datetime(raw_b_date)
+                    dt_obj = pd.to_datetime(raw_b_date).tz_localize(None) if hasattr(pd.to_datetime(raw_b_date), 'tz_localize') else pd.to_datetime(raw_b_date)
                     buy_date_str = f"{dt_obj.month}월 {dt_obj.day}일"
 
                     # 잠재 수익률 연산
@@ -4299,30 +4299,30 @@ with main_tab2:
                     is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
                     fmt_p = lambda p: f"₩{p:,.0f}" if is_krw else f"${p:,.2f}"
 
-                    # 🔥 HTML 태그 없이 순수 한국어 마크다운 강조 적용
-                    red_open_ret = f":red[**+{open_potential_ret:.1f}%**]"
-                    red_low_ret  = f":red[**+{potential_ret:.1f}%**]"
+                    # 🔥 [HTML 전용 빨간색 태그] (Streamlit 마크다운 문법 제거)
+                    red_open_ret = f"<span style='color:#ff4b4b; font-weight:bold;'>+{open_potential_ret:.1f}%</span>"
+                    red_low_ret  = f"<span style='color:#ff4b4b; font-weight:bold;'>+{potential_ret:.1f}%</span>"
 
                     # 1. 지지 받은 이동평균선 및 차트 분석
                     if abs(min_2b_low - ma5_val) / ma5_val < 0.015:
-                        cause_msg = f"🎯 **5일선 지지 반등**: 지정가({fmt_p(rec_entry)})까지 밀리지 않고, **실제 5일 이동평균선({fmt_p(min_2b_low)})**을 견고하게 지지받고 우상향했습니다."
+                        cause_msg = f"🎯 <b>5일선 지지 반등</b>: 지정가({fmt_p(rec_entry)})까지 밀리지 않고, <b>실제 5일 이동평균선({fmt_p(min_2b_low)})</b>을 견고하게 지지받고 우상향했습니다."
                     elif abs(min_2b_low - ma10_val) / ma10_val < 0.015:
-                        cause_msg = f"🛡️ **10일선 지지 반등**: 지정가({fmt_p(rec_entry)}) 미달 후 **실제 10일 이동평균선({fmt_p(min_2b_low)})** 부근에서 저점을 지지받았습니다."
+                        cause_msg = f"🛡️ <b>10일선 지지 반등</b>: 지정가({fmt_p(rec_entry)}) 미달 후 <b>실제 10일 이동평균선({fmt_p(min_2b_low)})</b> 부근에서 저점을 지지받았습니다."
                     elif abs(min_2b_low - ma20_val) / ma20_val < 0.015:
-                        cause_msg = f"🧱 **20일선 지지 반등**: 세력 심리선인 **20일 이동평균선({fmt_p(min_2b_low)})** 지지를 확인하고 시세가 반등했습니다."
+                        cause_msg = f"🧱 <b>20일선 지지 반등</b>: 세력 심리선인 <b>20일 이동평균선({fmt_p(min_2b_low)})</b> 지지를 확인하고 시세가 반등했습니다."
                     elif open_p > rec_entry * 1.012:
-                        cause_msg = f"🚀 **갭상승 모멘텀 분출**: 추천 익일 시가가 갭상승으로 시작하여 지정가({fmt_p(rec_entry)}) 하향 눌림 없이 강한 관성으로 직행했습니다."
+                        cause_msg = f"🚀 <b>갭상승 모멘텀 분출</b>: 추천 익일 시가가 갭상승으로 시작하여 지정가({fmt_p(rec_entry)}) 하향 눌림 없이 강한 관성으로 직행했습니다."
                     else:
-                        cause_msg = f"📐 **단기 저점 형성 후 직행**: 지정가({fmt_p(rec_entry)}) 근처 저점({fmt_p(min_2b_low)})까지만 눌린 뒤 상방 파동이 분출했습니다."
+                        cause_msg = f"📐 <b>단기 저점 형성 후 직행</b>: 지정가({fmt_p(rec_entry)}) 근처 저점({fmt_p(min_2b_low)})까지만 눌린 뒤 상방 파동이 분출했습니다."
 
-                    # 2. 체결 시점/가격 및 빨간색 최고 수익률 피드백
+                    # 2. 체결 시점/가격 및 최고 수익률 피드백 (줄바꿈 <br> 사용으로 초록색 코드블록 원천 차단)
                     feedback_msg = (
-                        f"💡 **실전 체결 시점 및 최고 수익률 분석**:\n"
-                        f"• **시초가 매수 시**: **{buy_date_str} 시초가({fmt_p(open_p)})**에 매수했다면 최고 {red_open_ret} 달성!\n"
-                        f"• **저점 매수 시**: **{buy_date_str} 실제 저점({fmt_p(min_2b_low)})**에 매수했다면 최고 {red_low_ret} 대파동 수익 포착!"
+                        f"💡 <b>실전 체결 시점 및 최고 수익률 분석</b>:<br>"
+                        f"• <b>시초가 매수 시</b>: {buy_date_str} 시초가({fmt_p(open_p)})에 매수했다면 최고 {red_open_ret} 달성!<br>"
+                        f"• <b>저점 매수 시</b>: {buy_date_str} 실제 저점({fmt_p(min_2b_low)})에 매수했다면 최고 {red_low_ret} 대파동 수익 포착!"
                     )
 
-                    item['reason'] = f"{cause_msg}\n\n{feedback_msg}"
+                    item['reason'] = f"{cause_msg}<br><br>{feedback_msg}"
                     final_results.append(item)
                     continue
 
