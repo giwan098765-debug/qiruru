@@ -935,6 +935,8 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     dx = 100 * (df['Plus_DI'] - df['Minus_DI']).abs() / di_sum
     df['ADX'] = dx.rolling(window=14, min_periods=1).mean()
 
+
+
   # 최신 데이터 매핑 (들여쓰기가 완벽하게 교정된 구역)
     latest = df.iloc[-1]
     price = float(latest['Close'])
@@ -3441,6 +3443,93 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # ====================================================================
+# 🎯 [1번 탑10 & 2번 소급 검증 100% 동일 조건 공유 함수]
+# ====================================================================
+def evaluate_stock_signal(df_proc, ai_data):
+    if not ai_data or df_proc is None or len(df_proc) < 20:
+        return None, 0.0, 0.0, ""
+
+    c_close = float(df_proc['Close'].iloc[-1])
+    c_open  = float(df_proc['Open'].iloc[-1])
+    c_vol   = float(df_proc['Volume'].iloc[-1])
+    vol_ma20= float(df_proc['Vol_MA_20'].iloc[-1]) if float(df_proc['Vol_MA_20'].iloc[-1]) > 0 else 1.0
+    rvol_val = c_vol / vol_ma20
+
+    # 1. 📈 20일선 및 60일선 상승세 검증 (기울기 양수)
+    ma20_curr = float(df_proc['MA_20'].iloc[-1]) if 'MA_20' in df_proc.columns else c_close
+    ma20_prev = float(df_proc['MA_20'].iloc[-2]) if 'MA_20' in df_proc.columns else c_close
+    ma60_curr = float(df_proc['MA_60'].iloc[-1]) if 'MA_60' in df_proc.columns else c_close
+    ma60_prev = float(df_proc['MA_60'].iloc[-2]) if 'MA_60' in df_proc.columns else c_close
+    
+    if ma20_curr <= ma20_prev or ma60_curr <= ma60_prev:
+        return None, 0.0, 0.0, ""
+
+    # 2. 📊 ADX 조건 (20 이상 및 상승세)
+    c_adx_curr = float(df_proc['ADX'].iloc[-1]) if 'ADX' in df_proc.columns else 25.0
+    c_adx_prev = float(df_proc['ADX'].iloc[-2]) if 'ADX' in df_proc.columns else 20.0
+    
+    if c_adx_curr < 20.0 or c_adx_curr <= c_adx_prev:
+        return None, 0.0, 0.0, ""
+
+    # 3. 🎯 DMI 조건 (+DI가 20 이상, -DI보다 우위, 상승세)
+    plus_di_curr = float(df_proc['Plus_DI'].iloc[-1]) if 'Plus_DI' in df_proc.columns else 25.0
+    plus_di_prev = float(df_proc['Plus_DI'].iloc[-2]) if 'Plus_DI' in df_proc.columns else 20.0
+    minus_di_curr = float(df_proc['Minus_DI'].iloc[-1]) if 'Minus_DI' in df_proc.columns else 15.0
+    
+    if plus_di_curr < 20.0 or plus_di_curr <= minus_di_curr or plus_di_curr <= plus_di_prev:
+        return None, 0.0, 0.0, ""
+
+    # 4. 🌊 MACD 조건 (0선~20 이내 및 상승세)
+    macd_curr = float(df_proc['MACD'].iloc[-1]) if 'MACD' in df_proc.columns else 5.0
+    macd_prev = float(df_proc['MACD'].iloc[-2]) if 'MACD' in df_proc.columns else 4.0
+    
+    if not (0.0 < macd_curr <= 20.0) or macd_curr <= macd_prev:
+        return None, 0.0, 0.0, ""
+
+    # 기존 가드레일 및 기술적 지표 검증 조건
+    c_ma20  = float(df_proc['MA_20'].iloc[-1]) if 'MA_20' in df_proc.columns else c_close
+    bb_upper = float(df_proc['BB_Upper'].iloc[-1]) if 'BB_Upper' in df_proc.columns else c_close
+    poc_high = float(ai_data.get('poc_price', c_close))
+
+    disparity_20 = (c_close / c_ma20) * 100.0 if c_ma20 > 0 else 100.0
+    if disparity_20 > 110.0:
+        return None, 0.0, 0.0, ""
+
+    c_atr = float(df_proc['ATR'].iloc[-1]) if 'ATR' in df_proc.columns else 0.0
+    atr_ratio = (c_atr / c_close) * 100.0 if c_close > 0 else 0.0
+    if atr_ratio < 2.2:
+        return None, 0.0, 0.0, ""
+
+    cond_poc = (c_close >= poc_high * 0.99)
+    cond_vol = (rvol_val >= 1.2) and (c_close >= c_open)
+    cond_bb  = (c_close >= bb_upper)
+
+    if not (cond_poc and (cond_vol or cond_bb)):
+        return None, 0.0, 0.0, ""
+
+    exp_win = float(ai_data.get('up_prob', 0.0))
+    exp_ret = float(ai_data.get('upside', 0.0))
+
+    if exp_win < 80.0 or exp_ret <= 0.0:
+        return None, 0.0, 0.0, ""
+
+    sl_price = float(ai_data.get('tighter_sl', c_close * 0.97))
+    risk_dist = c_close - sl_price if c_close > sl_price else (c_close * 0.03)
+    reward_dist = c_atr * 1.5
+    rr_ratio = reward_dist / risk_dist if risk_dist > 0 else 0.0
+
+    if rr_ratio < 1.2:
+        return None, 0.0, 0.0, ""
+
+    sig_tags = []
+    if cond_bb: sig_tags.append("볼린저밴드 돌파")
+    if c_close >= poc_high: sig_tags.append("매물대 완파")
+    if rvol_val >= 1.2: sig_tags.append("대량수급")
+    signal_str = " / ".join(sig_tags) if sig_tags else "추세우수"
+
+    return signal_str, exp_win, exp_ret, c_close
+
+# ====================================================================
 # 🎯 [내일/글피 예상 이평선 역산 기반 스마트 진입가 Engine]
 # ====================================================================
 def calculate_smart_entry_price(df_proc, ai_data):
@@ -3503,29 +3592,53 @@ def evaluate_stock_signal(df_proc, ai_data):
     c_open  = float(df_proc['Open'].iloc[-1])
     c_vol   = float(df_proc['Volume'].iloc[-1])
     vol_ma20= float(df_proc['Vol_MA_20'].iloc[-1]) if float(df_proc['Vol_MA_20'].iloc[-1]) > 0 else 1.0
+    rvol_val = c_vol / vol_ma20
+
+    # 1. 📈 20일선 및 60일선 상승세 검증 (기울기 양수)
+    ma20_curr = float(df_proc['MA_20'].iloc[-1]) if 'MA_20' in df_proc.columns else c_close
+    ma20_prev = float(df_proc['MA_20'].iloc[-2]) if 'MA_20' in df_proc.columns else c_close
+    ma60_curr = float(df_proc['MA_60'].iloc[-1]) if 'MA_60' in df_proc.columns else c_close
+    ma60_prev = float(df_proc['MA_60'].iloc[-2]) if 'MA_60' in df_proc.columns else c_close
     
-    c_adx   = float(df_proc['ADX'].iloc[-1]) if 'ADX' in df_proc.columns else 25.0
+    if ma20_curr <= ma20_prev or ma60_curr <= ma60_prev:
+        return None, 0.0, 0.0, ""
+
+    # 2. 📊 ADX 조건 (20 이상 및 상승세)
+    c_adx_curr = float(df_proc['ADX'].iloc[-1]) if 'ADX' in df_proc.columns else 25.0
+    c_adx_prev = float(df_proc['ADX'].iloc[-2]) if 'ADX' in df_proc.columns else 20.0
+    
+    if c_adx_curr < 20.0 or c_adx_curr <= c_adx_prev:
+        return None, 0.0, 0.0, ""
+
+    # 3. 🎯 DMI 조건 (+DI가 20 이상, -DI보다 우위, 상승세)
+    plus_di_curr = float(df_proc['Plus_DI'].iloc[-1]) if 'Plus_DI' in df_proc.columns else 25.0
+    plus_di_prev = float(df_proc['Plus_DI'].iloc[-2]) if 'Plus_DI' in df_proc.columns else 20.0
+    minus_di_curr = float(df_proc['Minus_DI'].iloc[-1]) if 'Minus_DI' in df_proc.columns else 15.0
+    
+    if plus_di_curr < 20.0 or plus_di_curr <= minus_di_curr or plus_di_curr <= plus_di_prev:
+        return None, 0.0, 0.0, ""
+
+    # 4. 🌊 MACD 조건 (0선~20 이내 및 상승세)
+    macd_curr = float(df_proc['MACD'].iloc[-1]) if 'MACD' in df_proc.columns else 5.0
+    macd_prev = float(df_proc['MACD'].iloc[-2]) if 'MACD' in df_proc.columns else 4.0
+    
+    if not (0.0 < macd_curr <= 20.0) or macd_curr <= macd_prev:
+        return None, 0.0, 0.0, ""
+
+    # 기존 가드레일 및 기술적 지표 검증 조건
     c_ma20  = float(df_proc['MA_20'].iloc[-1]) if 'MA_20' in df_proc.columns else c_close
     bb_upper = float(df_proc['BB_Upper'].iloc[-1]) if 'BB_Upper' in df_proc.columns else c_close
     poc_high = float(ai_data.get('poc_price', c_close))
-    rvol_val = c_vol / vol_ma20
 
-    # 1. 횡보 차단 (ADX 20 미만) 및 과열 차단 (20일 이격도 110% 초과)
-    if c_adx < 20.0:
-        return None, 0.0, 0.0, ""
-    
     disparity_20 = (c_close / c_ma20) * 100.0 if c_ma20 > 0 else 100.0
     if disparity_20 > 110.0:
         return None, 0.0, 0.0, ""
 
-    # 1-1. 🚀 ATR 변동성 비율 하한선 필터 (1~5봉 내 5% 폭발을 위한 최소 2.2% 필수)
     c_atr = float(df_proc['ATR'].iloc[-1]) if 'ATR' in df_proc.columns else 0.0
     atr_ratio = (c_atr / c_close) * 100.0 if c_close > 0 else 0.0
-    
     if atr_ratio < 2.2:
         return None, 0.0, 0.0, ""
 
-    # 2. 대시세 모멘텀 필수 조건 (매물대 완파/지지 + 거래량 1.2배 양봉 OR 볼밴 돌파)
     cond_poc = (c_close >= poc_high * 0.99)
     cond_vol = (rvol_val >= 1.2) and (c_close >= c_open)
     cond_bb  = (c_close >= bb_upper)
@@ -3536,11 +3649,9 @@ def evaluate_stock_signal(df_proc, ai_data):
     exp_win = float(ai_data.get('up_prob', 0.0))
     exp_ret = float(ai_data.get('upside', 0.0))
 
-    # 3. 앙상블 스코어 80점 이상 (승률 80% 이상) 필수
     if exp_win < 80.0 or exp_ret <= 0.0:
         return None, 0.0, 0.0, ""
 
-    # 4. 손익비 가드레일 (R/R >= 1.2 필수)
     sl_price = float(ai_data.get('tighter_sl', c_close * 0.97))
     risk_dist = c_close - sl_price if c_close > sl_price else (c_close * 0.03)
     reward_dist = c_atr * 1.5
@@ -3549,7 +3660,6 @@ def evaluate_stock_signal(df_proc, ai_data):
     if rr_ratio < 1.2:
         return None, 0.0, 0.0, ""
 
-    # 시그널 태그 조립
     sig_tags = []
     if cond_bb: sig_tags.append("볼린저밴드 돌파")
     if c_close >= poc_high: sig_tags.append("매물대 완파")
