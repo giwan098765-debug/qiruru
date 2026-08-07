@@ -925,15 +925,17 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     df['Plus_DM'] = plus_dm
     df['Minus_DM'] = minus_dm
     
-    tr_14 = df['TR'].rolling(window=14, min_periods=1).sum()
-    tr_14 = np.where(tr_14 == 0, 1e-9, tr_14)
-    df['Plus_DI'] = 100 * (df['Plus_DM'].rolling(window=14, min_periods=1).sum() / tr_14)
-    df['Minus_DI'] = 100 * (df['Minus_DM'].rolling(window=14, min_periods=1).sum() / tr_14)
-    
+    # 💡 [트레이딩뷰 100% 동기화] 와일더 평활법(Wilder's RMA) 적용 ADX 계산
+    tr_14 = df['TR'].ewm(alpha=1/14, adjust=False).mean()
+    p_dm_14 = pd.Series(plus_dm, index=df.index).ewm(alpha=1/14, adjust=False).mean()
+    m_dm_14 = pd.Series(minus_dm, index=df.index).ewm(alpha=1/14, adjust=False).mean()
+
+    df['Plus_DI'] = 100 * (p_dm_14 / (tr_14 + 1e-10))
+    df['Minus_DI'] = 100 * (m_dm_14 / (tr_14 + 1e-10))
+
     di_sum = df['Plus_DI'] + df['Minus_DI']
-    di_sum = np.where(di_sum == 0, 1e-9, di_sum)
-    dx = 100 * (df['Plus_DI'] - df['Minus_DI']).abs() / di_sum
-    df['ADX'] = dx.rolling(window=14, min_periods=1).mean()
+    dx = 100 * (df['Plus_DI'] - df['Minus_DI']).abs() / (di_sum + 1e-10)
+    df['ADX'] = dx.ewm(alpha=1/14, adjust=False).mean()
 
 # ====================================================================
     # 🎯 [신규 추가] 4대 핵심 매수 조건 실시간 충족 여부 검증
@@ -3491,39 +3493,48 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # ====================================================================
-# 🎯 [수급 폭발주 vs 모멘텀 둔화주 완전 분기] 스마트 진입가 Engine
+# 🎯 [수급 폭발주 vs 모멘텀 둔화주/상단저항주 완전 분기] 스마트 진입가 Engine
 # ====================================================================
 def calculate_smart_entry_price(df_proc, ai_data):
     c_close = float(df_proc['Close'].iloc[-1])
     c_open  = float(df_proc['Open'].iloc[-1])
+    c_high  = float(df_proc['High'].iloc[-1])
+    c_low   = float(df_proc['Low'].iloc[-1])
     c_vol   = float(df_proc['Volume'].iloc[-1])
     
     vol_ma20 = float(df_proc['Vol_MA_20'].iloc[-1]) if 'Vol_MA_20' in df_proc.columns and float(df_proc['Vol_MA_20'].iloc[-1]) > 0 else 1.0
     rvol = c_vol / vol_ma20
 
-    # 이동평균선 연산
+    # 이동평균선 및 보조지표 연산
     ma5   = float(df_proc['MA_5'].iloc[-1])   if 'MA_5' in df_proc.columns else c_close
     ma10  = float(df_proc['MA_10'].iloc[-1])  if 'MA_10' in df_proc.columns else c_close
     ma20  = float(df_proc['MA_20'].iloc[-1])  if 'MA_20' in df_proc.columns else c_close
+    bb_upper = float(df_proc['BB_Upper'].iloc[-1]) if 'BB_Upper' in df_proc.columns else c_close
 
-    # MACD 꺾임(모멘텀 둔화) 또는 음봉 스캔
+    # MACD 꺾임 감지
     macd_hist_curr = float(df_proc['MACD_Hist'].iloc[-1]) if 'MACD_Hist' in df_proc.columns else 0.0
     macd_hist_prev = float(df_proc['MACD_Hist'].iloc[-2]) if 'MACD_Hist' in df_proc.columns and len(df_proc) >= 2 else macd_hist_curr
     
-    is_momentum_fading = (macd_hist_curr < macd_hist_prev) or (c_close < c_open)
+    # 💡 [정밀 감지] 음봉 OR MACD 꺾임 OR 윗꼬리 장착 OR 볼린저 상단 저항 터치
+    body = abs(c_close - c_open)
+    upper_shadow = c_high - max(c_open, c_close)
+    has_upper_shadow = (upper_shadow > body * 0.5)
+    near_bb_upper = (c_high >= bb_upper * 0.99)
+
+    is_resisted_or_fading = (macd_hist_curr < macd_hist_prev) or (c_close < c_open) or has_upper_shadow or near_bb_upper
     disparity_ma5 = (c_close / ma5) * 100.0 if ma5 > 0 else 100.0
 
     # ------------------------------------------------------------
-    # 🚀 [유형 1: LG생활건강] 거래량 폭발주 ➔ -1.0% 타이트 눌림 체결
+    # 🚀 [유형 1: LG생활건강] 대량 수급 폭발주 ➔ -1.0% 타이트 눌림 체결
     # ------------------------------------------------------------
-    if rvol >= 1.8 and disparity_ma5 >= 102.0 and not is_momentum_fading:
+    if rvol >= 1.8 and disparity_ma5 >= 102.0 and not is_resisted_or_fading:
         final_entry = c_close * 0.990  # 종가 대비 -1.0% 지정가 (8/3 저가 278,000원에 사지도록 유도)
         tag = "🚀 [수급폭발] 타이트 눌림 진입"
 
     # ------------------------------------------------------------
-    # 📉 [유형 2: 메리츠금융지주] 모멘텀 둔화/음봉 ➔ 실제 20일선 지지 대기
+    # 📉 [유형 2: 메리츠금융지주] 모멘텀 둔화 / 윗꼬리 / 상단 저항 / 거래량 미달 스윙주 ➔ 20일선(또는 10일선) 깊은 눌림 대기
     # ------------------------------------------------------------
-    elif is_momentum_fading:
+    elif is_resisted_or_fading or rvol < 1.5:
         if ma20 < c_close and ma20 > 0:
             final_entry = ma20
             tag = "🎯 [실제 20일선] 세력 심리선 지지 진입"
@@ -3535,7 +3546,7 @@ def calculate_smart_entry_price(df_proc, ai_data):
             tag = "🎯 [실제 5일선] 마디선 지지 진입"
 
     # ------------------------------------------------------------
-    # 🛡️ [유형 3: 일반 스윙주] 실제 5일선 마디선 진입
+    # 🛡️ [유형 3: 강한 우상향 지속주] 실제 5일선 마디선 진입
     # ------------------------------------------------------------
     else:
         final_entry = ma5
@@ -3549,6 +3560,11 @@ def calculate_smart_entry_price(df_proc, ai_data):
 # ====================================================================
 def evaluate_stock_signal(df_proc, ai_data):
     if not ai_data or df_proc is None or len(df_proc) < 30:
+        return None, 0.0, 0.0, ""
+
+    # 💡 [ADX 20.0 필수 강제 필터] 추세 강도 20 미만 박스권/횡보주 원천 차단
+    adx_val = float(df_proc['ADX'].iloc[-1]) if 'ADX' in df_proc.columns else 0.0
+    if adx_val < 20.0:
         return None, 0.0, 0.0, ""
 
     c_close = float(df_proc['Close'].iloc[-1])
@@ -3624,7 +3640,6 @@ def evaluate_stock_signal(df_proc, ai_data):
     exp_win = min(88.0 + (pattern_score * 0.1), 98.0)
     exp_ret = float(ai_data.get('upside', 4.0))
 
-    # 💡 시그널 태그 중복 제거 및 깔끔한 결합 (dict.fromkeys 활용)
     unique_tags = list(dict.fromkeys([entry_tag] + sig_tags))
     full_signal = " / ".join(unique_tags)
     return full_signal, exp_win, exp_ret, c_close
@@ -3635,6 +3650,11 @@ def evaluate_stock_signal(df_proc, ai_data):
 # ====================================================================
 def evaluate_surge_stock_signal(df_proc, ai_data):
     if not ai_data or df_proc is None or len(df_proc) < 60:
+        return None, 0.0, 0.0, ""
+
+    # 💡 [ADX 20.0 필수 강제 필터]
+    adx_val = float(df_proc['ADX'].iloc[-1]) if 'ADX' in df_proc.columns else 0.0
+    if adx_val < 20.0:
         return None, 0.0, 0.0, ""
 
     latest = df_proc.iloc[-1]
@@ -3685,6 +3705,11 @@ def run_unified_quant_eval(df_sub, name, ticker):
     if df_proc is None or ai_data is None:
         return None, None
 
+    # 💡 [1번 & 2번 검증 공통] ADX 20.0 미만 약세/횡보주 100% 원천 차단 가드레일
+    adx_val = float(df_proc['ADX'].iloc[-1]) if 'ADX' in df_proc.columns else 0.0
+    if adx_val < 20.0:
+        return None, None
+
     swing_res, surge_res = None, None
 
     # 2. 스마트 눌림목 공통 검증 (승률 85% 이상 & 패턴점수 75점 이상만)
@@ -3702,7 +3727,8 @@ def run_unified_quant_eval(df_sub, name, ticker):
             "exp_ret": round(up_s_sw, 1),
             "composite_score": round((up_p_sw * 0.7) + (up_s_sw * 3.0), 2),
             "signal": sig_sw, 
-            "score": (up_p_sw * 0.5) + (up_s_sw * 4.0)
+            "score": (up_p_sw * 0.5) + (up_s_sw * 4.0),
+            "adx": round(adx_val, 1)
         }
 
     # 3. 10%+ 초급등주 공통 검증
@@ -3720,7 +3746,8 @@ def run_unified_quant_eval(df_sub, name, ticker):
             "exp_ret": round(up_s_sg, 1),
             "composite_score": round((up_p_sg * 0.4) + (up_s_sg * 5.0), 2),
             "signal": f"⚡ [돌파/추격] {sig_sg}", 
-            "score": (up_p_sg * 0.5) + (up_s_sg * 5.0)
+            "score": (up_p_sg * 0.5) + (up_s_sg * 5.0),
+            "adx": round(adx_val, 1)
         }
 
     return swing_res, surge_res
@@ -3933,8 +3960,17 @@ with main_tab1:
 # --------------------------------------------------------------------
 with main_tab2:
     st.markdown("### ⚡ AI 실시간 추천 및 과거 소급 검증 관제탑")
-    st.write("사이드바를 오갈 필요 없이, 여기서 직접 스캔을 실행하고 과거 추천 성과까지 한눈에 검증합니다.")
-    st.write("")
+    # 💡 [시장별 최적 스캔 시간 안내 박스]
+    st.markdown("""
+    <div style="background-color: #0f172a; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; margin: 10px 0 15px 0; font-size: 13px; line-height: 1.6;">
+        <div style="font-weight: bold; color: #38bdf8; margin-bottom: 6px;">⏰ 시장별 AI 최적 스캔 권장 시간 안내</div>
+        <div style="display: flex; gap: 16px; flex-wrap: wrap; color: #e2e8f0;">
+            <span>🇰🇷 <b>국내 주식:</b> 오전 <b style="color: #ff4b4b;">08:00 ~ 08:40</b> <span style="color: #94a3b8; font-size: 11px;">(개장 전 동시호가 준비)</span></span>
+            <span>🇺🇸 <b>미국 주식:</b> 밤 <b style="color: #ff4b4b;">21:30 ~ 22:00</b> <span style="color: #94a3b8; font-size: 11px;">(정규장 개장 전 준비)</span></span>
+            <span>🪙 <b>암호화폐:</b> 오전 <b style="color: #ff4b4b;">08:30 ~ 08:50</b> <span style="color: #94a3b8; font-size: 11px;">(09시 일봉 리셋 전)</span></span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     col_b1, col_b2 = st.columns([1.1, 0.9])
 
@@ -4102,24 +4138,27 @@ with main_tab2:
                 progress_bar.progress(1.0)
                 status_box.success(f"✅ 과거 {bars_ago}봉 전 추천주 스캔 완료!")
 
-                top_kr = sorted([x for x in cand_matched if x['market'] == "국내"], key=lambda x: x['score'], reverse=True)[:5]
-                top_us = sorted([x for x in cand_matched if x['market'] == "미국"], key=lambda x: x['score'], reverse=True)[:5]
-                top_coin = sorted([x for x in cand_matched if x['market'] == "코인"], key=lambda x: x['score'], reverse=True)[:5]
+                # 🎯 [전 시장 무제한 통합 순위 정렬] 국가/시장 상관없이 종합 점수(score) 내림차순 정렬
+                cand_matched_sorted = sorted(cand_matched, key=lambda x: x['score'], reverse=True)
 
-                selected_tops = top_kr + top_us + top_coin
+                # 상위 통합 정예 종목 선정 (통합 Top 10)
+                selected_tops = cand_matched_sorted[:10]
             else:
                 selected_tops = db_top_tasks
 
-            # 💡 [유령 종목 완전 차단] 승률 85% 미만 및 시그널 없는 종목 안전 필터링
+            # 💡 [유령 종목 및 ADX < 20 차단] DB 기록도 ADX 20.0 미만은 강제 탈락
             valid_tops = []
             for x in selected_tops:
                 if x and isinstance(x, dict):
                     exp_w = x.get('exp_win', x.get('up_prob', 0.0))
                     sig_w = str(x.get('signal', '')).strip()
-                    if exp_w >= 85.0 and sig_w and sig_w != "None":
+                    adx_w = float(x.get('adx', 25.0))
+                    
+                    if exp_w >= 85.0 and sig_w and sig_w != "None" and adx_w >= 20.0:
                         valid_tops.append(x)
 
-            selected_tops = valid_tops
+            # 🚀 통합 순위(1위~N위) 엄격 재부여 (미국/국내/코인 종합 최우수 순)
+            selected_tops = sorted(valid_tops, key=lambda x: x['score'], reverse=True)
             for r, x in enumerate(selected_tops, 1):
                 x['rank'] = r
 
@@ -4229,12 +4268,61 @@ with main_tab2:
                         is_closed = True
                         break
 
-                # 미체결 처리
+                # ------------------------------------------------------------
+                # ⚪ [미체결 정밀 분석 ENGINE - 지지 이평선/체결 타점/빨간색 최고 수익률 반영]
+                # ------------------------------------------------------------
                 if not is_bought:
                     item['is_bought'] = False
                     item['real_ret'] = 0.0
                     item['max_ret'] = 0.0
-                    item['reason'] = "⚪ **미체결**: 1~2봉 이내에 지정한 눌림목 가격에 도달하지 않았습니다."
+
+                    # 1~2봉 이내 실제 형성된 시가(open_p), 저가(min_2b_low) 및 최고가 추출
+                    open_p = float(future_bars.iloc[0]['Open'])
+                    min_2b_low = float(future_bars.iloc[:2]['Low'].min())
+                    max_5b_high = float(future_bars['High'].max())
+                    
+                    # 날짜 추출 (체결 가능 시점)
+                    raw_b_date = future_bars.iloc[0]['Date']
+                    dt_obj = pd.to_datetime(raw_b_date, format='mixed', errors='coerce') if isinstance(raw_b_date, str) else pd.to_datetime(raw_b_date)
+                    buy_date_str = f"{dt_obj.month}월 {dt_obj.day}일"
+
+                    # 잠재 수익률 연산
+                    open_potential_ret = ((max_5b_high - open_p) / open_p) * 100.0
+                    potential_ret = ((max_5b_high - min_2b_low) / min_2b_low) * 100.0
+
+                    # 이동평균선 수치 추출
+                    ma5_val  = float(df_hist['MA_5'].iloc[t_idx])  if 'MA_5' in df_hist.columns else rec_entry
+                    ma10_val = float(df_hist['MA_10'].iloc[t_idx]) if 'MA_10' in df_hist.columns else rec_entry
+                    ma20_val = float(df_hist['MA_20'].iloc[t_idx]) if 'MA_20' in df_hist.columns else rec_entry
+
+                    # 화폐 단위 포맷팅
+                    is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
+                    fmt_p = lambda p: f"₩{p:,.0f}" if is_krw else f"${p:,.2f}"
+
+                    # 🔥 수익률 빨간색 하이라이트 태그
+                    red_open_ret = f"<span style='color:#ff4b4b; font-weight:bold;'>+{open_potential_ret:.1f}%</span>"
+                    red_low_ret  = f"<span style='color:#ff4b4b; font-weight:bold;'>+{potential_ret:.1f}%</span>"
+
+                    # 1. 지지 받은 이동평균선 및 차트 분석
+                    if abs(min_2b_low - ma5_val) / ma5_val < 0.015:
+                        cause_msg = f"🎯 **5일선 지지 반등**: 지정가({fmt_p(rec_entry)})까지 밀리지 않고, **실제 5일 이동평균선({fmt_p(min_2b_low)})**을 견고하게 지지받고 우상향했습니다."
+                    elif abs(min_2b_low - ma10_val) / ma10_val < 0.015:
+                        cause_msg = f"🛡️ **10일선 지지 반등**: 지정가({fmt_p(rec_entry)}) 미달 후 **실제 10일 이동평균선({fmt_p(min_2b_low)})** 부근에서 저점을 지지받았습니다."
+                    elif abs(min_2b_low - ma20_val) / ma20_val < 0.015:
+                        cause_msg = f"🧱 **20일선 지지 반등**: 세력 심리선인 **20일 이동평균선({fmt_p(min_2b_low)})** 지지를 확인하고 시세가 반등했습니다."
+                    elif open_p > rec_entry * 1.012:
+                        cause_msg = f"🚀 **갭상승 모멘텀 분출**: 추천 익일 시가가 갭상승으로 시작하여 지정가({fmt_p(rec_entry)}) 하향 눌림 없이 강한 관성으로 직행했습니다."
+                    else:
+                        cause_msg = f"📐 **단기 저점 형성 후 직행**: 지정가({fmt_p(rec_entry)}) 근처 저점({fmt_p(min_2b_low)})까지만 눌린 뒤 상방 파동이 분출했습니다."
+
+                    # 2. 체결 시점/가격 및 빨간색 최고 수익률 피드백
+                    feedback_msg = (
+                        f"💡 **실전 체결 시점 및 최고 수익률 분석**:\n"
+                        f"• **시초가 매수 시**: **{buy_date_str} 시초가({fmt_p(open_p)})**에 매수했다면 최고 {red_open_ret} 달성!\n"
+                        f"• **저점 매수 시**: **{buy_date_str} 실제 저점({fmt_p(min_2b_low)})**에 매수했다면 최고 {red_low_ret} 대파동 수익 포착!"
+                    )
+
+                    item['reason'] = f"{cause_msg}\n\n{feedback_msg}"
                     final_results.append(item)
                     continue
 
