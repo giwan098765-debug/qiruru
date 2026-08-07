@@ -3507,7 +3507,7 @@ def calculate_smart_entry_price(df_proc, ai_data):
     ma10  = float(df_proc['MA_10'].iloc[-1])  if 'MA_10' in df_proc.columns else c_close
     ma20  = float(df_proc['MA_20'].iloc[-1])  if 'MA_20' in df_proc.columns else c_close
     
-    # 💡 [핵심 추가] MACD 히스토그램 꺾임(모멘텀 둔화) 여부 감지
+    # 💡 MACD 히스토그램 꺾임(모멘텀 둔화) 여부 정밀 감지
     macd_hist_curr = float(df_proc['MACD_Hist'].iloc[-1]) if 'MACD_Hist' in df_proc.columns else 0.0
     macd_hist_prev = float(df_proc['MACD_Hist'].iloc[-2]) if 'MACD_Hist' in df_proc.columns and len(df_proc) >= 2 else macd_hist_curr
     is_momentum_fading = (macd_hist_curr < macd_hist_prev)
@@ -3515,7 +3515,7 @@ def calculate_smart_entry_price(df_proc, ai_data):
     disparity_ma5 = (c_close / ma5) * 100.0 if ma5 > 0 else 100.0
 
     # ------------------------------------------------------------
-    # 🚀 1. 수급 폭발주 (RVOL 2.0배 이상 & 5일선 강한 이격)
+    # 🚀 1. 수급 폭발주 (RVOL 2.0배 이상 & 5일선 강한 이격 & 모멘텀 유지)
     # ------------------------------------------------------------
     if rvol >= 2.0 and disparity_ma5 >= 102.5 and not is_momentum_fading:
         final_entry = max(c_close * 0.988, min(c_close * 0.993, c_close * 0.990))
