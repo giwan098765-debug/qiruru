@@ -3568,7 +3568,7 @@ def evaluate_stock_signal(df_proc, ai_data):
     c_low   = float(df_proc['Low'].iloc[-1])
     
     calc_entry, entry_tag = calculate_smart_entry_price(df_proc, ai_data)
-    if calc_entry <= 0 or (abs(c_close - calc_entry) / calc_entry * 100.0) > 2.0:
+    if calc_entry <= 0 or (abs(c_close - calc_entry) / calc_entry * 100.0) > 7.0:
         return None, 0.0, 0.0, ""
 
     pattern_score = 0
