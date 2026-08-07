@@ -3491,7 +3491,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # ====================================================================
-# 🎯 [수급 폭발주 vs 5/10일선 실제 지지주 이원화] 동적 진입가 Engine
+# 🎯 [모멘텀 둔화 감지 ➔ 10/20일선 깊은 눌림 대기] 정밀 진입가 Engine
 # ====================================================================
 def calculate_smart_entry_price(df_proc, ai_data):
     c_close = float(df_proc['Close'].iloc[-1])
@@ -3502,32 +3502,46 @@ def calculate_smart_entry_price(df_proc, ai_data):
     vol_ma20 = float(df_proc['Vol_MA_20'].iloc[-1]) if 'Vol_MA_20' in df_proc.columns and float(df_proc['Vol_MA_20'].iloc[-1]) > 0 else 1.0
     rvol = c_vol / vol_ma20
 
-    # 주요 이동평균선 연산
+    # 이동평균선 수치
     ma5   = float(df_proc['MA_5'].iloc[-1])   if 'MA_5' in df_proc.columns else c_close
     ma10  = float(df_proc['MA_10'].iloc[-1])  if 'MA_10' in df_proc.columns else c_close
     ma20  = float(df_proc['MA_20'].iloc[-1])  if 'MA_20' in df_proc.columns else c_close
     
+    # 💡 [핵심 추가] MACD 히스토그램 꺾임(모멘텀 둔화) 여부 감지
+    macd_hist_curr = float(df_proc['MACD_Hist'].iloc[-1]) if 'MACD_Hist' in df_proc.columns else 0.0
+    macd_hist_prev = float(df_proc['MACD_Hist'].iloc[-2]) if 'MACD_Hist' in df_proc.columns and len(df_proc) >= 2 else macd_hist_curr
+    is_momentum_fading = (macd_hist_curr < macd_hist_prev)
+
     disparity_ma5 = (c_close / ma5) * 100.0 if ma5 > 0 else 100.0
 
     # ------------------------------------------------------------
-    # 🚀 [유형 A] 거래량 폭발 & 이격 확장의 '즉시 폭발형'
+    # 🚀 1. 수급 폭발주 (RVOL 2.0배 이상 & 5일선 강한 이격)
     # ------------------------------------------------------------
-    if rvol >= 2.0 and disparity_ma5 >= 102.5:
-        # 5일선까지 안 내려오고 바로 갈 가능성이 높으므로 타이트한 눌림목(-0.7% ~ -1.2%) 적용
+    if rvol >= 2.0 and disparity_ma5 >= 102.5 and not is_momentum_fading:
         final_entry = max(c_close * 0.988, min(c_close * 0.993, c_close * 0.990))
         tag = "🚀 [수급폭발] 타이트 눌림 진입"
 
     # ------------------------------------------------------------
-    # 🛡️ [유형 B] 5일선 / 10일선에 예쁘게 눌렸다 갈 '실제 이평선 지지형'
+    # 📉 2. 모멘텀 둔화주 (MACD 꺾임) ➔ 10일선 / 20일선 깊은 지지 대기
+    # ------------------------------------------------------------
+    elif is_momentum_fading:
+        if ma10 < c_close:
+            final_entry = ma10
+            tag = "🎯 [실제 10일선] 깊은 눌림 지지 진입"
+        elif ma20 < c_close:
+            final_entry = ma20
+            tag = "🎯 [실제 20일선] 세력 심리선 지지 진입"
+        else:
+            final_entry = c_close * 0.980
+            tag = "🎯 [단기 깊은눌림] 지정가 진입"
+
+    # ------------------------------------------------------------
+    # 🛡️ 3. 일반 이평선 지지주
     # ------------------------------------------------------------
     else:
-        # 현재가 아래에 있는 이동평균선 중 가장 가까운 이평선에 직접 지정가 대기
         if ma5 < c_close:
             final_entry = ma5
             tag = "🎯 [실제 5일선] 마디선 지지 진입"
-        elif ma10 < c_close:
-            final_entry = ma10
-            tag = "🎯 [실제 10일선] 마디선 지지 진입"
         else:
             final_entry = c_close * 0.990
             tag = "🎯 [단기 눌림] 지정가 진입"
@@ -4053,45 +4067,8 @@ with main_tab2:
             except Exception:
                 pass
 
-            # 과거 시점 검증 워커 함수
-            def eval_past_recommendation_worker(cand, ctx):
-                if ctx is not None:
-                    add_script_run_ctx(ctx=ctx)
-                try:
-                    market_label, name, ticker = cand
-                    df_hist = get_raw_daily_data(ticker)
-                    if df_hist is None or len(df_hist) < 130:
-                        return None
-
-                    bars_ago_val = st.session_state.get('slider_bars_ago', 5)
-                    t_idx = len(df_hist) - 1 - bars_ago_val
-                    if t_idx < 60:
-                        return None
-
-                    df_sub = df_hist.iloc[:t_idx + 1].copy()
-                    df_proc, ai_data = process_data(df_sub, "daily", ticker, skip_news=True)
-                    # 💡 1번 탑10 스캐너와 100% 동일한 조건문으로 검증
-                    signal_str, exp_win, exp_ret, c_close = evaluate_stock_signal(df_proc, ai_data)
-
-                    # 🎯 과거 시점 진입가 산출 (signal_str에 이미 진입 태그가 포함되어 있으므로 중복 결합 제거)
-                    entry_p, _ = calculate_smart_entry_price(df_proc, ai_data)
-                    full_signal_str = signal_str
-                    atr_val = float(df_proc['ATR'].iloc[-1]) if 'ATR' in df_proc.columns else entry_p * 0.03
-
-                    return {
-                        "market": market_label,
-                        "name": name,
-                        "ticker": ticker,
-                        "entry_p": entry_p,
-                        "signal": full_signal_str,
-                        "score": (exp_win * 0.5) + (exp_ret * 4.0),
-                        "exp_win": exp_win,
-                        "exp_ret": exp_ret,
-                        "atr": atr_val,
-                        "t_idx": t_idx
-                    }
-                except Exception:
-                    return None
+            # 🎯 selected_tops 선제적 안전 초기화 (UnboundLocalError 방지)
+            selected_tops = []
 
             # 2. 📊 프로그레스 바 및 스캔 진행 상황 UI 세팅
             if not db_top_tasks:
@@ -4110,7 +4087,7 @@ with main_tab2:
                 status_box = st.empty()
                 ctx = get_script_run_ctx()
 
-                with ThreadPoolExecutor(max_workers=20) as executor:
+                with ThreadPoolExecutor(max_workers=25) as executor:
                     futures = {executor.submit(eval_past_recommendation_worker, cand, ctx): cand for cand in all_candidates}
                     for future in as_completed(futures):
                         processed += 1
@@ -4134,15 +4111,20 @@ with main_tab2:
                 top_us = sorted([x for x in cand_matched if x['market'] == "미국"], key=lambda x: x['score'], reverse=True)[:5]
                 top_coin = sorted([x for x in cand_matched if x['market'] == "코인"], key=lambda x: x['score'], reverse=True)[:5]
 
-# 💡 [유령 종목 완전 차단] 승률 85% 미만 및 시그널 없는 억지 채움 종목 100% 제거
-            selected_tops = [
-                x for x in selected_tops 
-                if x.get('exp_win', 0.0) >= 85.0 
-                and x.get('signal') 
-                and str(x.get('signal')).strip() != "None"
-            ]
+                selected_tops = top_kr + top_us + top_coin
+            else:
+                selected_tops = db_top_tasks
 
-            # 조건 만족 종목에만 순위 다시 부여
+            # 💡 [유령 종목 완전 차단] 승률 85% 미만 및 시그널 없는 종목 안전 필터링
+            valid_tops = []
+            for x in selected_tops:
+                if x and isinstance(x, dict):
+                    exp_w = x.get('exp_win', x.get('up_prob', 0.0))
+                    sig_w = str(x.get('signal', '')).strip()
+                    if exp_w >= 85.0 and sig_w and sig_w != "None":
+                        valid_tops.append(x)
+
+            selected_tops = valid_tops
             for r, x in enumerate(selected_tops, 1):
                 x['rank'] = r
 
