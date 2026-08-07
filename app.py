@@ -3491,44 +3491,37 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # ====================================================================
-# 🎯 [모멘텀 둔화 감지 ➔ 20일선/10일선 깊은 눌림 대기] 정밀 진입가 Engine
+# 🎯 [수급 폭발주 vs 모멘텀 둔화주 완전 분기] 스마트 진입가 Engine
 # ====================================================================
 def calculate_smart_entry_price(df_proc, ai_data):
     c_close = float(df_proc['Close'].iloc[-1])
-    c_high  = float(df_proc['High'].iloc[-1])
-    c_low   = float(df_proc['Low'].iloc[-1])
+    c_open  = float(df_proc['Open'].iloc[-1])
     c_vol   = float(df_proc['Volume'].iloc[-1])
     
     vol_ma20 = float(df_proc['Vol_MA_20'].iloc[-1]) if 'Vol_MA_20' in df_proc.columns and float(df_proc['Vol_MA_20'].iloc[-1]) > 0 else 1.0
     rvol = c_vol / vol_ma20
 
-    # 이동평균선 수치
+    # 이동평균선 연산
     ma5   = float(df_proc['MA_5'].iloc[-1])   if 'MA_5' in df_proc.columns else c_close
     ma10  = float(df_proc['MA_10'].iloc[-1])  if 'MA_10' in df_proc.columns else c_close
     ma20  = float(df_proc['MA_20'].iloc[-1])  if 'MA_20' in df_proc.columns else c_close
 
-    # 💡 [컬럼 유연 대조] MACD 컬럼명 대소문자 불일치 차단 및 모멘텀 꺾임 정밀 감지
-    macd_col = next((col for col in ['MACD_Hist', 'MACD_hist', 'macd_hist', 'MACD'] if col in df_proc.columns), None)
+    # MACD 꺾임(모멘텀 둔화) 또는 음봉 스캔
+    macd_hist_curr = float(df_proc['MACD_Hist'].iloc[-1]) if 'MACD_Hist' in df_proc.columns else 0.0
+    macd_hist_prev = float(df_proc['MACD_Hist'].iloc[-2]) if 'MACD_Hist' in df_proc.columns and len(df_proc) >= 2 else macd_hist_curr
     
-    if macd_col and len(df_proc) >= 2:
-        h_curr = float(df_proc[macd_col].iloc[-1])
-        h_prev = float(df_proc[macd_col].iloc[-2])
-        is_momentum_fading = (h_curr < h_prev)
-    else:
-        # MACD 컬럼이 없거나 예외 시 음봉 여부로 모멘텀 둔화 판별
-        is_momentum_fading = (df_proc['Close'].iloc[-1] < df_proc['Open'].iloc[-1])
-
+    is_momentum_fading = (macd_hist_curr < macd_hist_prev) or (c_close < c_open)
     disparity_ma5 = (c_close / ma5) * 100.0 if ma5 > 0 else 100.0
 
     # ------------------------------------------------------------
-    # 🚀 1. 수급 폭발주 (RVOL 2.0배 이상 & 모멘텀 살아있음)
+    # 🚀 [유형 1: LG생활건강] 거래량 폭발주 ➔ -1.0% 타이트 눌림 체결
     # ------------------------------------------------------------
-    if rvol >= 2.0 and disparity_ma5 >= 102.5 and not is_momentum_fading:
-        final_entry = max(c_close * 0.988, min(c_close * 0.993, c_close * 0.990))
+    if rvol >= 1.8 and disparity_ma5 >= 102.0 and not is_momentum_fading:
+        final_entry = c_close * 0.990  # 종가 대비 -1.0% 지정가 (8/3 저가 278,000원에 사지도록 유도)
         tag = "🚀 [수급폭발] 타이트 눌림 진입"
 
     # ------------------------------------------------------------
-    # 📉 2. 모멘텀 둔화주 (MACD/음봉 꺾임) ➔ 20일선 우선 지정 (20일선 지지)
+    # 📉 [유형 2: 메리츠금융지주] 모멘텀 둔화/음봉 ➔ 실제 20일선 지지 대기
     # ------------------------------------------------------------
     elif is_momentum_fading:
         if ma20 < c_close and ma20 > 0:
@@ -3538,19 +3531,15 @@ def calculate_smart_entry_price(df_proc, ai_data):
             final_entry = ma10
             tag = "🎯 [실제 10일선] 깊은 눌림 지지 진입"
         else:
-            final_entry = c_close * 0.980
-            tag = "🎯 [단기 깊은눌림] 지정가 진입"
-
-    # ------------------------------------------------------------
-    # 🛡️ 3. 일반 이평선 지지주
-    # ------------------------------------------------------------
-    else:
-        if ma5 < c_close:
             final_entry = ma5
             tag = "🎯 [실제 5일선] 마디선 지지 진입"
-        else:
-            final_entry = c_close * 0.990
-            tag = "🎯 [단기 눌림] 지정가 진입"
+
+    # ------------------------------------------------------------
+    # 🛡️ [유형 3: 일반 스윙주] 실제 5일선 마디선 진입
+    # ------------------------------------------------------------
+    else:
+        final_entry = ma5
+        tag = "🎯 [실제 5일선] 마디선 지지 진입"
 
     return round(final_entry, 2), tag
 
