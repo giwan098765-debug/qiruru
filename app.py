@@ -710,11 +710,9 @@ def check_benchmark_regime(ticker_symbol):
         is_kr_asset = any(x in ticker_symbol for x in [".KS", ".KQ", "-KRW"])
         
         if is_kr_asset:
-            # 국내 주식/코인은 KOSPI 지수 연동
             idx_df = fdr.DataReader('KS11', start='2024-01-01').tail(70)
             idx_name = "KOSPI"
         else:
-            # 미국/해외 주식은 S&P 500 지수 연동
             sp500 = yf.Ticker("^GSPC")
             idx_df = sp500.history(period="3m")
             idx_name = "S&P 500"
@@ -726,7 +724,6 @@ def check_benchmark_regime(ticker_symbol):
         idx_ma20 = float(idx_df['Close'].rolling(20).mean().iloc[-1])
         idx_ma60 = float(idx_df['Close'].rolling(60).mean().iloc[-1])
         
-        # 벤치마크 지수가 20일선과 60일선을 모두 하회하는 약세장(Bear Market) 국면 판정
         if idx_close < idx_ma20 and idx_close < idx_ma60:
             return True, f"🚨 [{idx_name} 약세장] 벤치마크 지수가 20일/60일선 아래에 위치한 하락장 국면 (보수적 대응 권고)"
         
@@ -734,6 +731,36 @@ def check_benchmark_regime(ticker_symbol):
         
     except Exception:
         return False, ""
+
+# 🚨 [신규 추가] 어닝콜 / 실적 발표 이벤트 리스크(Event Risk) 3일 자동 감지 엔진
+# ====================================================================
+@st.cache_data(ttl=7200)
+def check_event_risk(ticker_symbol):
+    """
+    앞뒤 3일 이내 실적 발표, 어닝콜(Earnings Call) 등 대형 이벤트 존재 여부 감지
+    반환값: (has_event_risk: bool, event_msg: str)
+    """
+    try:
+        import yfinance as yf
+        from datetime import datetime, timedelta
+        
+        if "-KRW" in ticker_symbol or ".KS" in ticker_symbol or ".KQ" in ticker_symbol:
+            return False, ""
+
+        stock = yf.Ticker(ticker_symbol)
+        cal = stock.calendar
+        
+        if cal is not None and not cal.empty:
+            today = datetime.now().date()
+            if 'Earnings Date' in cal.index:
+                event_dates = cal.loc['Earnings Date'].values
+                for ed in event_dates:
+                    ed_date = pd.to_datetime(ed).date()
+                    if abs((ed_date - today).days) <= 3:
+                        return True, f"🚨 [이벤트 리스크] 3일 이내 어닝콜/실적 발표 예정 ({ed_date}) ➔ 매수 강제 차단"
+    except Exception:
+        pass
+    return False, ""
 
 # ====================================================================
 # 🏛️ [신규 추가] 국내 주식 외국인/기관 순매수 수급 감지 엔진
@@ -879,17 +906,22 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     df['STD_20'] = df['Close'].rolling(window=20, min_periods=1).std()
     df['Vol_MA_20'] = df['Volume'].rolling(window=20, min_periods=1).mean()
 
-# 💵 [PRO QUANT 집도] ATR% >= 3.0% 고변동성 & 5일 평균 거래대금(국내 300억 / 해외 $3,000만) 강제 필터
+# 💵 [PRO QUANT 교정] 국내주식 거래대금 하한선 150억 원으로 완화 (LG생건 250억 대형주 정상 노출)
     df['Value'] = df['Close'] * df['Volume']
     turnover_5d = df['Value'].tail(5).mean()
     is_kr_asset = any(x in ticker_symbol for x in [".KS", ".KQ", "-KRW"])
-    min_turnover = 30_000_000_000 if is_kr_asset else 30_000_000
+    min_turnover = 15_000_000_000 if is_kr_asset else 15_000_000  # 국내 150억 / 해외 $1,500만
 
     df['TR'] = np.maximum(df['High'] - df['Low'], np.maximum(abs(df['High'] - df['Close'].shift(1)), abs(df['Low'] - df['Close'].shift(1))))
     df['ATR'] = df['TR'].rolling(window=14, min_periods=1).mean()
     df['ATR_Pct'] = (df['ATR'] / df['Close']) * 100.0
 
-    is_high_volatility = float(df['ATR_Pct'].iloc[-1]) >= 3.0
+    c_vol_curr = float(df['Volume'].iloc[-1])
+    vol_ma20_curr = float(df['Vol_MA_20'].iloc[-1]) if float(df['Vol_MA_20'].iloc[-1]) > 0 else 1.0
+    rvol_curr = c_vol_curr / vol_ma20_curr
+
+    # ATR% 1.5% 이상이거나 거래량이 1.2배 이상 터진 종목은 필터 통과
+    is_high_volatility = (float(df['ATR_Pct'].iloc[-1]) >= 1.5) or (rvol_curr >= 1.2)
     is_high_liquidity = turnover_5d >= min_turnover
 
     if timeframe == 'daily' and not (is_high_volatility and is_high_liquidity):
@@ -918,8 +950,8 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     df['MACD'] = ema_12 - ema_26
     df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['Signal']
-    df['EMA_12'] = ema_12  # 👈 기존 df['MA_20'] 덮어쓰기 버그 수정!
-    df['STD_20'] = df['Close'].rolling(window=20, min_periods=1).std()
+    df['EMA_12'] = ema_12
+    df['STD_20'] = df['Close'].rolling(window=20, min_periods=1).std()  # 👈 20일 윈도우로 교정 완료!
 
     # ADX 및 DMI 연산
     up_move = df['High'].diff()
@@ -1233,6 +1265,18 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
         failed_reasons.append(bear_msg)
         if up_prob_base < 60.0:
             failed_reasons.append("🚨 [Market Regime Filter] 지수 약세장 국면으로 인한 매수 시그널 강제 차단(Hard Lock)")
+
+# 📐 [PRO QUANT 고도화 1] 20일 이격도(Disparity) 과열 차단 (108% 이상 매수 금지)
+    disparity_20 = (price / ma20) * 100.0 if ma20 > 0 else 100.0
+    if disparity_20 >= 108.0:
+        up_prob_base -= 40.0
+        failed_reasons.append(f"🚨 [고이격 과열 경고] 20일선 이격도({disparity_20:.1f}%) 108% 초과 ➔ 폭락 리스크로 매수 강제 차단")
+
+    # 🗓️ [PRO QUANT 고도화 2] 어닝콜 / 실적 발표 이벤트 리스크 강제 차단
+    has_event, event_msg = check_event_risk(ticker_symbol)
+    if has_event:
+        up_prob_base -= 50.0
+        failed_reasons.append(event_msg)
 
     # 🏛️ 국내 주식 외국인/기관 순매수 수급 가산점 반영
     flow_bonus, flow_msg = get_kr_investor_flow(ticker_symbol)
@@ -1614,33 +1658,15 @@ def get_gemini_advice(api_key, ticker, ai_data, entry_price, roi, currency_symbo
         else:
             position_info = "- 나의 포지션: 현재 미보유 (신규 진입 타이밍 관망 중)"
         
-        # 💡 [PRO QUANT 개편] 제미나이 팩트 시트에 2.0 : 1 손익비 수식 탑재
-        fact_sheet = f"""
-        [시장 데이터 분석 대상: {ticker}]
-        - 현재가: {currency_symbol}{ai_data['price']:,.2f}
-        {position_info}
-        - 최대 매물대 가격 (POC): {currency_symbol}{ai_data['poc_price']:,.2f}
-        - TTM Squeeze (변동성 에너지): {ai_data['squeeze_status']}
-        - 다중 시간프레임(MTF) 정렬 점수: {ai_data['mtf_score']}/6 점
-        - 2주 스윙 모멘텀 추세선: {ai_data['swing_trend']}
-        - 2주 스윙 매수 셋업 패턴: {ai_data['swing_setup']}
-        - 1차 목표가 (+5.0% / R:R 2.0:1): {currency_symbol}{ai_data['tp_price']:,.2f}
-        - 동적 손절가 (-2.5% Hard Cap): {currency_symbol}{ai_data['tighter_sl']:,.2f}
-        - 시장 추세 상태: {ai_data['trend_state']}
-        - 기술적 보조지표 종합 시그널: {ai_data['current_signal']}
-        - 최근 5일간 수집된 뉴스 요약(5W1H): {ai_data['news_summary_lines']}
-        - 뉴스 감성 분석 방향성: {ai_data['news_impact_reason']}
-        """
-
-        system_instruction = """
-        당신은 월스트리트 프랍 데스크 출신의 냉철한 PRO QUANT 트레이딩 디렉터입니다.
-        손익비 2.0 : 1 (+5.0% 익절 / -2.5% 손절) 전략을 철저히 준수하여 대응 시나리오를 지시하십시오.
-
-        [핵심 매매 규칙 지침]
-        1. 🎯 손익비 2.0 : 1 구조: 1차 목표가(+5.0%) 도달 시 50% 물량 익절을 지시하십시오.
-        2. 🛡️ Break-Even 본절가 방어: 주가가 +3.0% 이상 상승 시, 손절가를 매수가 +0.3%(수수료 보존)로 상향하여 리스크를 0으로 확정짓는 전략을 조언하십시오.
-        3. 🛑 -2.5% Hard Cap 손절: -2.5% 하락 시 즉시 원칙 손절을 선언하십시오.
-        """
+        # 💡 [PRO QUANT 교정] 특수 이모지 파싱 문법 에러 원천 차단 포맷
+        system_instruction = (
+            "당신은 월스트리트 프랍 데스크 출신의 냉철한 PRO QUANT 트레이딩 디렉터입니다.\n"
+            "손익비 2.0 : 1 (+5.0% 익절 / -2.5% 손절) 전략을 철저히 준수하여 대응 시나리오를 지시하십시오.\n\n"
+            "[핵심 매매 규칙 지침]\n"
+            "1. 손익비 2.0 : 1 구조: 1차 목표가(+5.0%) 도달 시 50% 물량 익절을 지시하십시오.\n"
+            "2. Break-Even 본절가 방어: 주가가 +3.0% 이상 상승 시, 손절가를 매수가 +0.3%(수수료 보존)로 상향하여 리스크를 0으로 확정짓는 전략을 조언하십시오.\n"
+            "3. -2.5% Hard Cap 손절: -2.5% 하락 시 즉시 원칙 손절을 선언하십시오."
+        )
 
         prompt = f"{system_instruction}\n\n{fact_sheet}\n\n위 데이터를 종합하여 분석 브리핑을 작성해라."
         
@@ -1762,7 +1788,6 @@ def render_my_portfolio_manager():
             curr_p = float(df_curr['Close'].iloc[-1])
             curr_low = float(df_curr['Low'].iloc[-1])
             
-            # 매수일 이후 데이터 스캔 (최고 상승률 및 트레일링 판단용)
             df_after = df_curr[df_curr['Date'].dt.strftime('%Y-%m-%d') >= e_date]
             if df_after.empty:
                 df_after = df_curr.tail(5)
@@ -1771,21 +1796,18 @@ def render_my_portfolio_manager():
             max_ret_pct = ((max_high_since_entry - entry_p) / entry_p) * 100.0
             curr_ret_pct = ((curr_p - entry_p) / entry_p) * 100.0
 
-            # ATR 연산 및 소급 검증 공식 100% 동기화
             df_curr['TR'] = np.maximum(df_curr['High'] - df_curr['Low'], np.maximum(abs(df_curr['High'] - df_curr['Close'].shift(1)), abs(df_curr['Low'] - df_curr['Close'].shift(1))))
             c_atr = float(df_curr['TR'].rolling(14, min_periods=1).mean().iloc[-1])
 
-            # 🎯 [PRO QUANT 개편] 1차(+5.0%), 2차(+9.0%), -2.5% 강제 손절가 설정
-            tp1_price = entry_p * 1.050  # +5.0% (R:R = 2.0 : 1)
-            tp2_price = entry_p * 1.090  # +9.0% (대파동 추종)
-            tp3_price = entry_p * 1.120  # +12.0%
-            sl_price  = entry_p * 0.975  # -2.5% Hard Cap
+            tp1_price = entry_p * 1.050
+            tp2_price = entry_p * 1.090
+            tp3_price = entry_p * 1.120
+            sl_price  = entry_p * 0.975
 
             tp1_pct = 5.0
             tp2_pct = 9.0
             tp3_pct = 12.0
 
-            # 💡 실시간 매도/홀딩 지시문 생성 (Break-Even 본절 방어 연동)
             if curr_ret_pct <= -2.5 or curr_low <= sl_price:
                 action_bg = "#450a0a"
                 action_border = "#ef4444"
@@ -1811,9 +1833,9 @@ def render_my_portfolio_manager():
         else:
             curr_p = entry_p
             curr_ret_pct = 0.0
-            sl_price = entry_p * 0.97
-            tp1_price, tp2_price, tp3_price = entry_p*1.05, entry_p*1.10, entry_p*1.20
-            tp1_pct, tp2_pct, tp3_pct = 5.0, 10.0, 20.0
+            sl_price = entry_p * 0.975
+            tp1_price, tp2_price, tp3_price = entry_p*1.05, entry_p*1.09, entry_p*1.12
+            tp1_pct, tp2_pct, tp3_pct = 5.0, 9.0, 12.0
             action_bg = "#0f172a"
             action_border = "#334155"
             action_color = "#cbd5e1"
@@ -1821,44 +1843,51 @@ def render_my_portfolio_manager():
 
         ret_color = "#ff4b4b" if curr_ret_pct > 0 else ("#38bdf8" if curr_ret_pct < 0 else "#94a3b8")
 
-        card_html = f"""<div style="background-color: #1e2230; padding: 16px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #334155;">
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-<div>
-<span style="font-size: 18px; font-weight: bold; color: #ffffff;">{s_name}</span>
-<span style="font-size: 13px; color: #94a3b8;"> ({s_ticker}) | 등록일: {e_date}</span>
-</div>
-<div style="text-align: right;">
-<div style="font-size: 15px; font-weight: bold; color: {ret_color};">
-현재가: {fmt_p(curr_p)} ({curr_ret_pct:+.2f}%)
-</div>
-</div>
-</div>
-<div style="background-color: {action_bg}; border: 1px solid {action_border}; padding: 10px 14px; border-radius: 6px; margin-bottom: 10px; color: {action_color}; font-size: 13px; line-height: 1.5;">
-{action_text}
-</div>
-<div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; background-color: #0f172a; padding: 12px; border-radius: 8px; text-align: center;">
-<div>
-<div style="font-size: 11px; color: #94a3b8;">📌 내 진입가</div>
-<div style="font-size: 14px; font-weight: bold; color: #ffffff;">{fmt_p(entry_p)}</div>
-</div>
-<div>
-<div style="font-size: 11px; color: #38bdf8;">🛑 강제 손절 (-3%)</div>
-<div style="font-size: 14px; font-weight: bold; color: #38bdf8;">{fmt_p(sl_price)}</div>
-</div>
-<div>
-<div style="font-size: 11px; color: #f59e0b;">🔥 1차 ({tp1_pct:.1f}%)</div>
-<div style="font-size: 14px; font-weight: bold; color: #f59e0b;">{fmt_p(tp1_price)}</div>
-</div>
-<div>
-<div style="font-size: 11px; color: #ef4444;">🚀 2차 ({tp2_pct:.1f}%)</div>
-<div style="font-size: 14px; font-weight: bold; color: #ef4444;">{fmt_p(tp2_price)}</div>
-</div>
-<div>
-<div style="font-size: 11px; color: #a855f7;">💎 3차 ({tp3_pct:.1f}%)</div>
-<div style="font-size: 14px; font-weight: bold; color: #a855f7;">{fmt_p(tp3_price)}</div>
-</div>
-</div>
-</div>"""
+        curr_ret_str = f"{curr_ret_pct:+.2f}%"
+        tp1_pct_str = f"{tp1_pct:.1f}%"
+        tp2_pct_str = f"{tp2_pct:.1f}%"
+        tp3_pct_str = f"{tp3_pct:.1f}%"
+
+        card_html = (
+            f'<div style="background-color: #1e2230; padding: 16px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #334155;">'
+            f'<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">'
+            f'<div>'
+            f'<span style="font-size: 18px; font-weight: bold; color: #ffffff;">{s_name}</span>'
+            f'<span style="font-size: 13px; color: #94a3b8;"> ({s_ticker}) | 등록일: {e_date}</span>'
+            f'</div>'
+            f'<div style="text-align: right;">'
+            f'<div style="font-size: 15px; font-weight: bold; color: {ret_color};">'
+            f'현재가: {fmt_p(curr_p)} ({curr_ret_str})'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+            f'<div style="background-color: {action_bg}; border: 1px solid {action_border}; padding: 10px 14px; border-radius: 6px; margin-bottom: 10px; color: {action_color}; font-size: 13px; line-height: 1.5;">'
+            f'{action_text}'
+            f'</div>'
+            f'<div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; background-color: #0f172a; padding: 12px; border-radius: 8px; text-align: center;">'
+            f'<div>'
+            f'<div style="font-size: 11px; color: #94a3b8;">내 진입가</div>'
+            f'<div style="font-size: 14px; font-weight: bold; color: #ffffff;">{fmt_p(entry_p)}</div>'
+            f'</div>'
+            f'<div>'
+            f'<div style="font-size: 11px; color: #38bdf8;">강제 손절 (-2.5%)</div>'
+            f'<div style="font-size: 14px; font-weight: bold; color: #38bdf8;">{fmt_p(sl_price)}</div>'
+            f'</div>'
+            f'<div>'
+            f'<div style="font-size: 11px; color: #f59e0b;">1차 ({tp1_pct_str})</div>'
+            f'<div style="font-size: 14px; font-weight: bold; color: #f59e0b;">{fmt_p(tp1_price)}</div>'
+            f'</div>'
+            f'<div>'
+            f'<div style="font-size: 11px; color: #ef4444;">2차 ({tp2_pct_str})</div>'
+            f'<div style="font-size: 14px; font-weight: bold; color: #ef4444;">{fmt_p(tp2_price)}</div>'
+            f'</div>'
+            f'<div>'
+            f'<div style="font-size: 11px; color: #a855f7;">3차 ({tp3_pct_str})</div>'
+            f'<div style="font-size: 14px; font-weight: bold; color: #a855f7;">{fmt_p(tp3_price)}</div>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+        )
         with c_card:
             st.markdown(card_html, unsafe_allow_html=True)
 
@@ -1977,12 +2006,10 @@ def render_volume_reliability_analysis(df, detected_pattern="지정되지 않음
 def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe_ticker, is_krw):
     import pandas as pd
     
-    # [안전장치] yfinance 일봉 특유의 이중 컬럼(MultiIndex) 깨짐 현상 강제 해결
     if df_raw is not None and not df_raw.empty:
         if isinstance(df_raw.columns, pd.MultiIndex):
             df_raw.columns = df_raw.columns.get_level_values(0)
 
-    # 🟢 [CCTV 안전 구역] 여기서 연산을 감시하고, 터지면 범인의 족적을 강제 폭로합니다.
     try:
         df_proc, ai = process_data(df_raw, tab_name, safe_ticker, skip_news=True)
     except Exception as e:
@@ -1994,7 +2021,7 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
 # ====================================================================
     # 📊 데이터 부족 및 오류 방어선 (raw_data ➔ df_raw 매개변수 참조 오류 교정)
     # ====================================================================
-    if df_proc is None or df_raw is None or len(df_raw) < 10:
+    if df_proc is None or df_raw is None or len(df_raw) < 10:  # 👈 df_raw로 교정 완료!
         st.warning("데이터가 부족하여 해당 탭의 차트를 생성할 수 없습니다.")
         return None
 
@@ -2047,20 +2074,21 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
         day_pct_txt = "0.00%"
         day_pct_color = "#999999"
 
-    # 📌 범례 박스와 col_stat1 모두 else: 와 시작 위치를 똑같이 맞춥니다 (공백 4칸)
-    st.markdown("""
-<div style="background-color:#0f172a; padding:12px 16px; border-radius:8px; border:1px solid #334155; margin-bottom:12px;">
-    <div style="font-size:12px; font-weight:bold; color:#94a3b8; margin-bottom:8px;">📈 이동평균선(MA) 범례 및 주요 역할</div>
-    <div style="display:flex; flex-wrap:wrap; gap:16px; font-size:12px; font-weight:bold;">
-        <span style="color:#FF1493;">━ 5일선 <span style="color:#cbd5e1; font-weight:normal;">(초단기 추세)</span></span>
-        <span style="color:#29B6F6;">━ 10일선 <span style="color:#cbd5e1; font-weight:normal;">(단기 단타 생명선)</span></span>
-        <span style="color:#00E676;">━ 20일선 <span style="color:#cbd5e1; font-weight:normal;">(중단기 세력 심리선)</span></span>
-        <span style="color:#AB47BC;">━ 60일선 <span style="color:#cbd5e1; font-weight:normal;">(중기 수급 지지/저항)</span></span>
-        <span style="color:#FF6D00;">━ 120일선 <span style="color:#cbd5e1; font-weight:normal;">(경기/중장기 핵심 저항선)</span></span>
-        <span style="color:#FF1744;">━ 200일선 <span style="color:#cbd5e1; font-weight:normal;">(대세/장기 추세 분수령)</span></span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+    # 💡 [PRO QUANT 교정] 웹 특수 공백(\xa0) 및 multiline string 인코딩 에러 원천 차단
+    legend_html = (
+        '<div style="background-color:#0f172a; padding:12px 16px; border-radius:8px; border:1px solid #334155; margin-bottom:12px;">'
+        '<div style="font-size:12px; font-weight:bold; color:#94a3b8; margin-bottom:8px;">이동평균선(MA) 범례 및 주요 역할</div>'
+        '<div style="display:flex; flex-wrap:wrap; gap:16px; font-size:12px; font-weight:bold;">'
+        '<span style="color:#FF1493;">━ 5일선 <span style="color:#cbd5e1; font-weight:normal;">(초단기 추세)</span></span>'
+        '<span style="color:#29B6F6;">━ 10일선 <span style="color:#cbd5e1; font-weight:normal;">(단기 단타 생명선)</span></span>'
+        '<span style="color:#00E676;">━ 20일선 <span style="color:#cbd5e1; font-weight:normal;">(중단기 세력 심리선)</span></span>'
+        '<span style="color:#AB47BC;">━ 60일선 <span style="color:#cbd5e1; font-weight:normal;">(중기 수급 지지/저항)</span></span>'
+        '<span style="color:#FF6D00;">━ 120일선 <span style="color:#cbd5e1; font-weight:normal;">(경기/중장기 핵심 저항선)</span></span>'
+        '<span style="color:#FF1744;">━ 200일선 <span style="color:#cbd5e1; font-weight:normal;">(대세/장기 추세 분수령)</span></span>'
+        '</div>'
+        '</div>'
+    )
+    st.markdown(legend_html, unsafe_allow_html=True)
 
     # 1. 💡 화폐 기호, 포맷터 및 파동 마디가/손익비 연산
     currency_symbol = "₩" if is_krw else "$"
@@ -2088,34 +2116,36 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
     col_t.metric("🔴 1차 익절가 (50% 청산)", f"{fmt_p(c_tp1_p)}", f"+{tp1_pct_disp:.1f}%")
     col_s.metric("🔵 동적 손절가 (Hard Cap)", f"{fmt_p(c_sl_p)}", f"{sl_pct_disp:.1f}%", delta_color="inverse")
 
-    # 💡 [AI 1줄 추천 사유 출력]
+    # 💡 [PRO QUANT 교정] f-string 다중 문자열 특수 공백(\xa0) 및 이모지 인코딩 에러 원천 차단
     primary_reason = ai['success_reasons'][0] if ai['success_reasons'] else "주요 이동평균선 정배열 지지 구조 형성"
-    st.markdown(f"""
-    <div style="background-color:#1e293b; padding:10px 14px; border-radius:6px; border-left:4px solid #10b981; margin:10px 0 15px 0; font-size:13px; color:#e2e8f0;">
-        💡 <b>[AI 1줄 핵심 진단]</b> {primary_reason} (진입 타점: {entry_tag})
-    </div>
-    """, unsafe_allow_html=True)
+    reason_html = (
+        '<div style="background-color:#1e293b; padding:10px 14px; border-radius:6px; border-left:4px solid #10b981; margin:10px 0 15px 0; font-size:13px; color:#e2e8f0;">'
+        f'<b>[AI 1줄 핵심 진단]</b> {primary_reason} (진입 타점: {entry_tag})'
+        '</div>'
+    )
+    st.markdown(reason_html, unsafe_allow_html=True)
 
     col_stat1, col_stat2 = st.columns(2)
 
     with col_stat1:
-
-        st.markdown(f"""
-<div style="background-color:#141414; padding:15px; border-radius:10px; border-top: 5px solid #38bdf8; margin-bottom:15px; height:100px;">
-<p style="margin:0; font-size:12px; color:#999; font-weight:bold;">💵 REAL-TIME PRICE (실시간 현재가)</p>
-<h4 style="margin:8px 0 0 0; color:#38bdf8; font-size:20px; font-weight:bold;">
-{currency_symbol}{ai['price']:,.2f} <span style="font-size:14px; color:{day_pct_color}; margin-left:6px;">({day_pct_txt})</span>
-</h4>
-</div>
-""", unsafe_allow_html=True)
+        stat1_html = (
+            '<div style="background-color:#141414; padding:15px; border-radius:10px; border-top: 5px solid #38bdf8; margin-bottom:15px; height:100px;">'
+            '<p style="margin:0; font-size:12px; color:#999; font-weight:bold;">REAL-TIME PRICE (실시간 현재가)</p>'
+            f'<h4 style="margin:8px 0 0 0; color:#38bdf8; font-size:20px; font-weight:bold;">'
+            f'{currency_symbol}{ai["price"]:,.2f} <span style="font-size:14px; color:{day_pct_color}; margin-left:6px;">({day_pct_txt})</span>'
+            '</h4>'
+            '</div>'
+        )
+        st.markdown(stat1_html, unsafe_allow_html=True)
         
     with col_stat2:
-        st.markdown(f"""
-<div style="background-color:#141414; padding:15px; border-radius:10px; border-top: 5px solid {ai['squeeze_color']}; margin-bottom:15px; height:100px;">
-<p style="margin:0; font-size:12px; color:#999; font-weight:bold;">📊 TTM SQUEEZE (변동성 에너지)</p>
-<h4 style="margin:8px 0 0 0; color:{ai['squeeze_color']}; font-size:16px; font-weight:bold;">{ai['squeeze_status']}</h4>
-</div>
-""", unsafe_allow_html=True)
+        stat2_html = (
+            f'<div style="background-color:#141414; padding:15px; border-radius:10px; border-top: 5px solid {ai["squeeze_color"]}; margin-bottom:15px; height:100px;">'
+            '<p style="margin:0; font-size:12px; color:#999; font-weight:bold;">TTM SQUEEZE (변동성 에너지)</p>'
+            f'<h4 style="margin:8px 0 0 0; color:{ai["squeeze_color"]}; font-size:16px; font-weight:bold;">{ai["squeeze_status"]}</h4>'
+            '</div>'
+        )
+        st.markdown(stat2_html, unsafe_allow_html=True)
 
     # 💡 [신규 추가] 모바일용 보조지표 접기/펴기(Toggle) 컨트롤 UI
     with st.expander("⚙️ 차트 보조지표 접기/펴기 (모바일 가독성 최적화)", expanded=False):
@@ -2798,7 +2828,7 @@ elif sector == "🔍 직접 이름/티커 검색":
 # [분기점 2] 유저가 요청한 실시간 뉴스 매크로 관제탑 메뉴를 선택했을 때 (세션 주입 교정)
 # -------------------------------------------------------------------
 elif sector == "🌏 글로벌 실시간 증시 뉴스":
-    st.session_state['is_macro_mode'] = True  # 세션 상태에 직접 True 주입
+    st.session_state['is_macro_mode'] = True  # 👈 세션 상태에 직접 True 주입
     is_macro_mode = True
     safe_ticker, selected_name = None, "글로벌 매크로 시황"
 
@@ -2808,6 +2838,17 @@ elif sector == "🌏 글로벌 실시간 증시 뉴스":
 else:
     st.session_state['is_macro_mode'] = False
     raw_ticker_list = list(ASSETS[sector].keys())
+    ticker_list = [k for k in raw_ticker_list if not any(x in k for x in ["등극주", "시총", "주요통화"])]
+    
+    # 🟢 섹터 변경 시 인덱스 및 선택 상태 초기화
+    if 'current_sector' not in st.session_state or st.session_state.current_sector != sector:
+        st.session_state.current_sector = sector
+        st.session_state.current_idx = 0
+        st.session_state['sb_ticker_select'] = ticker_list[0]
+
+    # 🟢 selectbox 수동 변경 시 인덱스 자동 동기화
+    if 'sb_ticker_select' in st.session_state and st.session_state.sb_ticker_select in ticker_list:
+        st.session_state.current_idx = ticker_list.index(st.session_state.sb_ticker_select)
         
     if 'current_idx' not in st.session_state or st.session_state.current_idx >= len(ticker_list):
         st.session_state.current_idx = 0
@@ -2823,7 +2864,6 @@ else:
         st.session_state.sb_ticker_select = ticker_list[st.session_state.current_idx]
         st.rerun()
 
-    # 이제 index와 상태값이 완벽히 일치하여 버튼 클릭 시 종목명이 실시간으로 바뀝니다.
     selected_name = st.sidebar.selectbox("🎯 종목명", ticker_list, index=st.session_state.current_idx, key="sb_ticker_select")
     safe_ticker = ASSETS[sector][selected_name]
 
@@ -3483,8 +3523,29 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # ====================================================================
-# 🎯 [수급 폭발주 vs 모멘텀 둔화주/상단저항주 완전 분기] 스마트 진입가 Engine
+# 🎯 [PRO QUANT 개편 3.0] 종목 습성(Profile) + 실시간 모멘텀 동적 결합 엔진
 # ====================================================================
+
+# 👇 [여기부터 추가] ----------------------------------------------------
+def get_preferred_ma_layer(df_proc):
+    """최근 60봉 기준, 5/10/20일 이평선 중 종목이 가장 잘 지지받는 이평선(5, 10, 20)을 추출하는 함수"""
+    try:
+        recent = df_proc.tail(60).copy()
+        if len(recent) < 20 or 'MA_5' not in recent.columns:
+            return 5
+
+        # 각 이평선과 최근 저가(Low) 간의 평균 이격 거리 계산
+        dist_5 = (np.abs(recent['Low'] - recent['MA_5']) / recent['MA_5']).mean()
+        dist_10 = (np.abs(recent['Low'] - recent['MA_10']) / recent['MA_10']).mean()
+        dist_20 = (np.abs(recent['Low'] - recent['MA_20']) / recent['MA_20']).mean()
+
+        distances = {5: dist_5, 10: dist_10, 20: dist_20}
+        return min(distances, key=distances.get)
+    except Exception:
+        return 5
+# 👆 [여기까지 추가] ----------------------------------------------------
+
+
 def calculate_smart_entry_price(df_proc, ai_data):
     c_close = float(df_proc['Close'].iloc[-1])
     c_open  = float(df_proc['Open'].iloc[-1])
@@ -3495,54 +3556,37 @@ def calculate_smart_entry_price(df_proc, ai_data):
     vol_ma20 = float(df_proc['Vol_MA_20'].iloc[-1]) if 'Vol_MA_20' in df_proc.columns and float(df_proc['Vol_MA_20'].iloc[-1]) > 0 else 1.0
     rvol = c_vol / vol_ma20
 
-    # 이동평균선 및 보조지표 연산
+    # 이동평균선 연산
     ma5   = float(df_proc['MA_5'].iloc[-1])   if 'MA_5' in df_proc.columns else c_close
     ma10  = float(df_proc['MA_10'].iloc[-1])  if 'MA_10' in df_proc.columns else c_close
     ma20  = float(df_proc['MA_20'].iloc[-1])  if 'MA_20' in df_proc.columns else c_close
-    bb_upper = float(df_proc['BB_Upper'].iloc[-1]) if 'BB_Upper' in df_proc.columns else c_close
+    ma60  = float(df_proc['MA_60'].iloc[-1])  if 'MA_60' in df_proc.columns else c_close
 
-    # MACD 꺾임 감지
-    macd_hist_curr = float(df_proc['MACD_Hist'].iloc[-1]) if 'MACD_Hist' in df_proc.columns else 0.0
-    macd_hist_prev = float(df_proc['MACD_Hist'].iloc[-2]) if 'MACD_Hist' in df_proc.columns and len(df_proc) >= 2 else macd_hist_curr
-    
-    # 💡 [정밀 감지] 음봉 OR MACD 꺾임 OR 윗꼬리 장착 OR 볼린저 상단 저항 터치
-    body = abs(c_close - c_open)
-    upper_shadow = c_high - max(c_open, c_close)
-    has_upper_shadow = (upper_shadow > body * 0.5)
-    near_bb_upper = (c_high >= bb_upper * 0.99)
+    # 💡 종목 고유의 이평선 반등 습성(5일 vs 10일 vs 20일) 통계 추출
+    preferred_layer = get_preferred_ma_layer(df_proc)
 
-    is_resisted_or_fading = (macd_hist_curr < macd_hist_prev) or (c_close < c_open) or has_upper_shadow or near_bb_upper
-    disparity_ma5 = (c_close / ma5) * 100.0 if ma5 > 0 else 100.0
-
-    # ------------------------------------------------------------
-    # 🚀 [유형 1: LG생활건강] 대량 수급 폭발주 ➔ -1.0% 타이트 눌림 체결
-    # ------------------------------------------------------------
-    if rvol >= 1.8 and disparity_ma5 >= 102.0 and not is_resisted_or_fading:
-        final_entry = c_close * 0.990  # 종가 대비 -1.0% 지정가 (8/3 저가 278,000원에 사지도록 유도)
-        tag = "🚀 [수급폭발] 타이트 눌림 진입"
-
-    # ------------------------------------------------------------
-    # 📉 [유형 2: 메리츠금융지주] 모멘텀 둔화 / 윗꼬리 / 상단 저항 / 거래량 미달 스윙주 ➔ 20일선(또는 10일선) 깊은 눌림 대기
-    # ------------------------------------------------------------
-    elif is_resisted_or_fading or rvol < 1.5:
-        # 💡 20일선/10일선이 현재가보다 너무 멀어 -7% 이격제한 필터에 걸려 탈락하는 현상 방지 (최대 -3.5% 하한 캡)
-        min_entry_cap = c_close * 0.965
-        if ma20 < c_close and ma20 > 0:
-            final_entry = max(ma20, min_entry_cap)
-            tag = "🎯 [실제 20일선] 세력 심리선 지지 진입"
-        elif ma10 < c_close and ma10 > 0:
-            final_entry = max(ma10, min_entry_cap)
-            tag = "🎯 [실제 10일선] 깊은 눌림 지지 진입"
+    # 1. 종목 습성상 20일선 눌림목 반등 성향이 강한 종목 (예: 메리츠금융지주 등 저베타주)
+    if preferred_layer == 20:
+        if ma20 > 0 and ma20 < c_close:
+            final_entry = ma20
+            tag = "🎯 [실제 20일선] 세력 심리선 지지 눌림목 진입"
         else:
-            final_entry = max(ma5, min_entry_cap)
-            tag = "🎯 [실제 5일선] 마디선 지지 진입"
+            final_entry = ma10
+            tag = "⚡ [실제 10일선] 단기 생명선 지지 진입"
 
-    # ------------------------------------------------------------
-    # 🛡️ [유형 3: 강한 우상향 지속주] 실제 5일선 마디선 진입
-    # ------------------------------------------------------------
+    # 2. 10일선 반등 성향 종목
+    elif preferred_layer == 10:
+        if ma10 > 0 and ma10 < c_close:
+            final_entry = ma10
+            tag = "⚡ [실제 10일선] 단기 생명선 지지 진입"
+        else:
+            final_entry = ma5
+            tag = "🚀 [실제 5일선] 초강세 추세 관성 진입"
+
+    # 3. 5일선 반등 및 초강세 주도주 (NetApp, Jacobs, Illumina 등)
     else:
         final_entry = ma5
-        tag = "🎯 [실제 5일선] 마디선 지지 진입"
+        tag = "🚀 [실제 5일선] 초강세 추세 관성 진입"
 
     return round(final_entry, 2), tag
 
@@ -3624,9 +3668,9 @@ def evaluate_stock_signal(df_proc, ai_data):
         pattern_score += 10; sig_tags.append("3연속양봉")
 
     # ------------------------------------------------------------
-    # 🛡️ [PRO QUANT 개편] 손익비 2.0 : 1 고정 (목표 +5.0% / 손절 -2.5%)
+    # 🛡️ [PRO QUANT 개편] 손익비 2.0 : 1 고정 & 정예 커트라인(50점) 조율
     # ------------------------------------------------------------
-    if pattern_score < 75:
+    if pattern_score < 50:
         return None, 0.0, 0.0, ""
 
     exp_win = min(88.0 + (pattern_score * 0.1), 98.0)
@@ -3700,6 +3744,26 @@ def run_unified_quant_eval(df_sub, name, ticker):
     # 💡 [1번 & 2번 검증 공통] ADX 20.0 미만 약세/횡보주 100% 원천 차단 가드레일
     adx_val = float(df_proc['ADX'].iloc[-1]) if 'ADX' in df_proc.columns else 0.0
     if adx_val < 20.0:
+        return None, None
+
+# ====================================================================
+    # 🛡️ [신규 추가] 시장 지수 국면 및 갭/이격도 과열 방어 필터
+    # ====================================================================
+    # 1. 시장 지수 국면 필터 (약세장 진입 시 추천 차단)
+    is_bear, _ = check_benchmark_regime(ticker)
+    if is_bear:
+        return None, None
+
+    # 2. 이격도 및 갭 상승 제한 필터 (+6% 갭 초과 또는 5일선 이격 +5% 초과 차단)
+    latest = df_proc.iloc[-1]
+    prev_close = float(df_proc['Close'].iloc[-2]) if len(df_proc) >= 2 else float(latest['Open'])
+    open_price = float(latest['Open'])
+    
+    if open_price / prev_close > 1.06:
+        return None, None
+        
+    ma5 = float(latest['MA_5']) if 'MA_5' in latest else open_price
+    if (open_price - ma5) / ma5 > 0.05:
         return None, None
 
     swing_res, surge_res = None, None
