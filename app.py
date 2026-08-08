@@ -879,17 +879,21 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     df['STD_20'] = df['Close'].rolling(window=20, min_periods=1).std()
     df['Vol_MA_20'] = df['Volume'].rolling(window=20, min_periods=1).mean()
 
-# 💵 [개선 1] 하루 평균 거래대금 하한선 필터 (국내주식/코인 100억, 미국주식 2,000만$ 미만 자동 탈락)
+# 💵 [PRO QUANT 집도] ATR% >= 3.0% 고변동성 & 5일 평균 거래대금(국내 300억 / 해외 $3,000만) 강제 필터
     df['Value'] = df['Close'] * df['Volume']
-    avg_value = df['Value'].tail(20).mean()
+    turnover_5d = df['Value'].tail(5).mean()
     is_kr_asset = any(x in ticker_symbol for x in [".KS", ".KQ", "-KRW"])
-    liquidity_limit = 10_000_000_000 if is_kr_asset else 20_000_000
-    
-    # if timeframe == 'daily' and avg_value < liquidity_limit:
-#     return None, None
-    
+    min_turnover = 30_000_000_000 if is_kr_asset else 30_000_000
+
     df['TR'] = np.maximum(df['High'] - df['Low'], np.maximum(abs(df['High'] - df['Close'].shift(1)), abs(df['Low'] - df['Close'].shift(1))))
     df['ATR'] = df['TR'].rolling(window=14, min_periods=1).mean()
+    df['ATR_Pct'] = (df['ATR'] / df['Close']) * 100.0
+
+    is_high_volatility = float(df['ATR_Pct'].iloc[-1]) >= 3.0
+    is_high_liquidity = turnover_5d >= min_turnover
+
+    if timeframe == 'daily' and not (is_high_volatility and is_high_liquidity):
+        return None, None
     
     # 1. 표준 볼린저 밴드(2.0배) 및 켈트너 채널 연산
     df['BB_Upper'] = df['MA_20'] + (df['STD_20'] * 2.0)
@@ -915,7 +919,7 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['Signal']
     df['EMA_12'] = ema_12  # 👈 기존 df['MA_20'] 덮어쓰기 버그 수정!
-    df['STD_20'] = df['Close'].rolling(window=12).std()
+    df['STD_20'] = df['Close'].rolling(window=20, min_periods=1).std()
 
     # ADX 및 DMI 연산
     up_move = df['High'].diff()
@@ -1077,13 +1081,13 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
         success_reasons.append("⚡ [캔들] 바닥권 망치형(Hammer) 포착: 저점 매수세 급증")
     if upper_sh[-1] > (2.0 * body[-1]) and lower_sh[-1] < (0.3 * body[-1]) and price > ma20:
         pattern_score -= 15
+        failed_reasons.append("[캔들] 고점권 유성형(Shooting Star) 포착: 상방 차익 매물 투하")
 
     # 🛡️ 개미털기(Bear Trap) 정밀 판독기
     if c_low[-1] < support and c_close[-1] >= (support * 0.995) and lower_sh[-1] > (body[-1] * 1.2):
         pattern_score += 30
         if price < ma60: pattern_score += 20 
         success_reasons.append("🔥 [지표 판독] 개미털기(Bear Trap) 포착: 장중 손절가를 의도적으로 이탈시킨 후 아래꼬리로 강력하게 말아 올림 (초강력 반등 신호)")
-        failed_reasons.append("[캔들] 고점권 유성형(Shooting Star) 포착: 상방 차익 매물 투하")
     if is_red[-2] and is_green[-1] and c_open[-1] <= c_close[-2] and c_close[-1] >= c_open[-2]:
         pattern_score += 15
         success_reasons.append("⚡ [캔들] 상승장악형 포착: 이전 음봉 매물대를 거래량 실린 양봉이 장악")
@@ -1222,11 +1226,13 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     if price < ma60 or rsi_val >= 70:
         up_prob_base = min(up_prob_base, 35.0)
 
-    # 🛡️ 벤치마크 지수(KOSPI / S&P 500) 약세장 필터링 적용
+    # 🛡️ [PRO QUANT 개선] Market Regime Filter (하락장 -30% 패널티 및 매수 차단)
     is_bear, bear_msg = check_benchmark_regime(ticker_symbol)
     if is_bear:
-        up_prob_base -= 10.0  # 시장 전반 약세에 따른 확신도 -10% 감점
-        failed_reasons.append(bear_msg)  # 하방 약세 경고에 약세장 메시지 추가
+        up_prob_base -= 30.0  # 하락장(Bear Regime) 진입 시 확신도 -30% 강한 패널티 부여
+        failed_reasons.append(bear_msg)
+        if up_prob_base < 60.0:
+            failed_reasons.append("🚨 [Market Regime Filter] 지수 약세장 국면으로 인한 매수 시그널 강제 차단(Hard Lock)")
 
     # 🏛️ 국내 주식 외국인/기관 순매수 수급 가산점 반영
     flow_bonus, flow_msg = get_kr_investor_flow(ticker_symbol)
@@ -1361,6 +1367,18 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     # 진입가 대비 타이트 구조 컷 및 목표가 연산 규칙 동기화
     tighter_sl = max(support, price * 0.96) if support < price and (price - support)/price < 0.05 else price * 0.965
     tp_price = price + (atr * 2.5)  # 단타 고정 익절 목표가
+
+# 🛡️ [PRO QUANT 개선] 손익비 2.0 : 1 강제 구조화 (+5.0% 익절 / -2.5% 손절)
+    entry_target_p = price * 0.995                          # 진입가 (-0.5% 눌림 지정가 가정)
+    tighter_sl = entry_target_p * 0.975                     # -2.5% 타이트 손절선 (Hard Cap)
+    tp1_price = entry_target_p * 1.050                      # +5.0% 1차 목표가 (R:R = 2.0 : 1)
+    tp2_price = entry_target_p * 1.090                      # +9.0% 2차 목표가 (R:R = 3.6 : 1)
+    tp_price = tp1_price
+
+    # 💡 Break-Even 메커니즘: 주가 +3.0% 이상 상승 도달 경험 시, 손절가를 매수가 +0.3%(수수료 보존)로 즉시 상향
+    recent_high_pct = ((df['High'].iloc[-1] - entry_target_p) / entry_target_p) * 100.0
+    if recent_high_pct >= 3.0:
+        tighter_sl = max(tighter_sl, entry_target_p * 1.003)
     
     # 기본값 셋업
     live_action = "🧭 신규 진입 타이밍 관망 중"
@@ -1596,7 +1614,7 @@ def get_gemini_advice(api_key, ticker, ai_data, entry_price, roi, currency_symbo
         else:
             position_info = "- 나의 포지션: 현재 미보유 (신규 진입 타이밍 관망 중)"
         
-        # 💡 [제미나이 팩트 시트에 2주 스윙 지표 탑재]
+        # 💡 [PRO QUANT 개편] 제미나이 팩트 시트에 2.0 : 1 손익비 수식 탑재
         fact_sheet = f"""
         [시장 데이터 분석 대상: {ticker}]
         - 현재가: {currency_symbol}{ai_data['price']:,.2f}
@@ -1606,13 +1624,8 @@ def get_gemini_advice(api_key, ticker, ai_data, entry_price, roi, currency_symbo
         - 다중 시간프레임(MTF) 정렬 점수: {ai_data['mtf_score']}/6 점
         - 2주 스윙 모멘텀 추세선: {ai_data['swing_trend']}
         - 2주 스윙 매수 셋업 패턴: {ai_data['swing_setup']}
-        - 최근 수평 저항선(목표가): {currency_symbol}{ai_data['resist']:,.2f}
-        - 최근 수평 지지선(최후방어): {currency_symbol}{ai_data['support']:,.2f}
-        - 단기 생명선(20일선): {currency_symbol}{ai_data.get('ma_20', 0):,.2f}
-        - 중기 수급선(60일선): {currency_symbol}{ai_data.get('ma_60', 0):,.2f}
-        - 경기 저항선(120일선): {currency_symbol}{ai_data.get('ma_120', 0):,.2f}
-        - 대세 장기선(200일선): {currency_symbol}{ai_data.get('ma_200', 0):,.2f}
-        - 단타 타이트 손절가 (구조 컷): {currency_symbol}{ai_data['tighter_sl']:,.2f}
+        - 1차 목표가 (+5.0% / R:R 2.0:1): {currency_symbol}{ai_data['tp_price']:,.2f}
+        - 동적 손절가 (-2.5% Hard Cap): {currency_symbol}{ai_data['tighter_sl']:,.2f}
         - 시장 추세 상태: {ai_data['trend_state']}
         - 기술적 보조지표 종합 시그널: {ai_data['current_signal']}
         - 최근 5일간 수집된 뉴스 요약(5W1H): {ai_data['news_summary_lines']}
@@ -1620,28 +1633,13 @@ def get_gemini_advice(api_key, ticker, ai_data, entry_price, roi, currency_symbo
         """
 
         system_instruction = """
-        당신은 15년 경력의 냉철하고 이성적인 월스트리트 출신 프로 스윙 트레이더입니다. 
-        투자의 흔한 경고 문구(예: '본인의 책임...')는 일절 배제하고, 철저히 데이터에 입각한 공격적이고 스마트한 리스크 관리 대응 시나리오를 지시하십시오.
+        당신은 월스트리트 프랍 데스크 출신의 냉철한 PRO QUANT 트레이딩 디렉터입니다.
+        손익비 2.0 : 1 (+5.0% 익절 / -2.5% 손절) 전략을 철저히 준수하여 대응 시나리오를 지시하십시오.
 
-        특히, 대시보드에 새롭게 반영된 아래 고급 지표들을 전략 수립에 최우선적으로 반영하여 근거로 삼으십시오:
-        
-        1. 🎯 최대 매물대 (POC): 
-           - 현재가가 이 가격대보다 위에 있다면, 든든한 바닥 매물 지지가 있으므로 '매수 우위'로 진단하십시오.
-           - 현재가가 이 가격대 아래에 있다면, 머리 위에 강력한 저항 매물이 쏟아질 수 있으므로 '돌파 확인 전까지 관망' 또는 '보수적 대응'을 지시하십시오.
-        
-        2. 🔴 TTM Squeeze:
-           - 스퀴즈 상태가 '스퀴즈 ON(수축)'이라면 곧 변동성 에너지의 폭발적인 분출이 다가오고 있음을 강하게 강조하고, 조만간 터질 시세 분출 방향을 대비하라고 조언하십시오.
-
-        3. 🧭 다중 시간프레임 점수 (MTF Score):
-           - [5~6점]: 장기, 중기, 단기 추세가 완전히 정배열로 정렬된 강세장입니다. 공격적인 비중 확보 및 불타기를 허용하십시오.
-           - [0~2점]: 단기/중장기 추세가 전부 꺾인 약세장입니다. 리스크를 타이트하게 가져가십시오.
-
-        4. 🔥 2주 스윙 모멘텀 & 셋업 (EMA & VDU):
-           - 거래량 절벽(VDU) 지표와 8/21 EMA 추세의 강세/약세 부합 여부를 확인하여 1~14일 스윙 보유 시 최적의 분할 진입 타점인지 설명하십시오.
-
-        [최종 브리핑 양식 가이드라인]
-        - 신규 진입 시: POC 부근에서의 눌림목 매수 타점 또는 스퀴즈 돌파 시점의 명확한 진입 시나리오를 제시하십시오.
-        - 기존 보유 시: 본인의 평단가를 반영한 실시간 수익률을 고려하여, 수평 저항선(목표가)과 동적 손절가(ATR 손절선) 기준의 '행동 요령'을 선언하십시오.
+        [핵심 매매 규칙 지침]
+        1. 🎯 손익비 2.0 : 1 구조: 1차 목표가(+5.0%) 도달 시 50% 물량 익절을 지시하십시오.
+        2. 🛡️ Break-Even 본절가 방어: 주가가 +3.0% 이상 상승 시, 손절가를 매수가 +0.3%(수수료 보존)로 상향하여 리스크를 0으로 확정짓는 전략을 조언하십시오.
+        3. 🛑 -2.5% Hard Cap 손절: -2.5% 하락 시 즉시 원칙 손절을 선언하십시오.
         """
 
         prompt = f"{system_instruction}\n\n{fact_sheet}\n\n위 데이터를 종합하여 분석 브리핑을 작성해라."
@@ -1777,38 +1775,38 @@ def render_my_portfolio_manager():
             df_curr['TR'] = np.maximum(df_curr['High'] - df_curr['Low'], np.maximum(abs(df_curr['High'] - df_curr['Close'].shift(1)), abs(df_curr['Low'] - df_curr['Close'].shift(1))))
             c_atr = float(df_curr['TR'].rolling(14, min_periods=1).mean().iloc[-1])
 
-            # 🎯 1차(+3.5%), 2차(+5.0%), 3차(+7.0% 슈팅), -3% 하드 캡 손절가 설정
-            tp1_price = entry_p * 1.035
-            tp2_price = entry_p * 1.050
-            tp3_price = entry_p * 1.070  # 👈 3차 오버슈팅 관성 타점 (+7.0%)
-            sl_price  = max(entry_p - (c_atr * 1.2), entry_p * 0.97)
+            # 🎯 [PRO QUANT 개편] 1차(+5.0%), 2차(+9.0%), -2.5% 강제 손절가 설정
+            tp1_price = entry_p * 1.050  # +5.0% (R:R = 2.0 : 1)
+            tp2_price = entry_p * 1.090  # +9.0% (대파동 추종)
+            tp3_price = entry_p * 1.120  # +12.0%
+            sl_price  = entry_p * 0.975  # -2.5% Hard Cap
 
-            tp1_pct = 3.5
-            tp2_pct = 5.0
-            tp3_pct = 7.0
+            tp1_pct = 5.0
+            tp2_pct = 9.0
+            tp3_pct = 12.0
 
-            # 💡 실시간 매도/홀딩 지시문 생성
-            if curr_ret_pct <= -3.0 or curr_low <= sl_price:
+            # 💡 실시간 매도/홀딩 지시문 생성 (Break-Even 본절 방어 연동)
+            if curr_ret_pct <= -2.5 or curr_low <= sl_price:
                 action_bg = "#450a0a"
                 action_border = "#ef4444"
                 action_color = "#fca5a5"
-                action_text = f"🛑 <b>[전량 강제 손절]</b> -3.0% 손절가({fmt_p(sl_price)}) 도달! 미련 없이 즉시 전량 손절하세요."
-            elif max_ret_pct >= 2.0:
-                if curr_p <= entry_p * 1.005:
+                action_text = f"🛑 <b>[전량 강제 손절]</b> -2.5% 손절가({fmt_p(sl_price)}) 도달! 미련 없이 즉시 전량 손절하세요."
+            elif max_ret_pct >= 3.0:
+                if curr_p <= entry_p * 1.003:
                     action_bg = "#064e3b"
                     action_border = "#10b981"
                     action_color = "#a7f3d0"
-                    action_text = f"🛡️ <b>[수익 방어 청산]</b> 최고 +{max_ret_pct:.1f}% 상승 후 하락 반전! +0.5% 지점({fmt_p(entry_p*1.005)})에서 전량 매도 완료하세요."
+                    action_text = f"🛡️ <b>[수익 방어 청산]</b> 최고 +{max_ret_pct:.1f}% 상승 후 하락 반전! 본절 방어선({fmt_p(entry_p*1.003)})에서 청산 완료하세요."
                 else:
                     action_bg = "#431407"
                     action_border = "#f97316"
                     action_color = "#fdba74"
-                    action_text = f"🔥 <b>[수익 방어 스탑 가동]</b> 최고 +{max_ret_pct:.1f}% 상승함! 주가가 밀려 <b>{fmt_p(entry_p*1.005)} (+0.5%)</b> 도달 시 전량 매도 대기하세요."
+                    action_text = f"🔥 <b>[Break-Even 가동]</b> 최고 +{max_ret_pct:.1f}% 상승! 주가 밀릴 시 <b>{fmt_p(entry_p*1.003)} (+0.3%)</b> 본절 방어 대기하세요."
             else:
                 action_bg = "#0f172a"
                 action_border = "#3b82f6"
                 action_color = "#93c5fd"
-                action_text = f"🧭 <b>[관망/홀딩]</b> 현재 수익률 {curr_ret_pct:+.2f}%. -3.0% 손절 및 익절 목표 범위 안에서 추적 중입니다."
+                action_text = f"🧭 <b>[관망/홀딩]</b> 현재 수익률 {curr_ret_pct:+.2f}%. -2.5% 손절 및 +5.0% 익절 목표 범위 안에서 추적 중입니다."
 
         else:
             curr_p = entry_p
@@ -1994,9 +1992,9 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
         return
 
 # ====================================================================
-    # 📊 데이터 부족 및 오류 방어선 (줄 맞춤 정밀 교정본)
+    # 📊 데이터 부족 및 오류 방어선 (raw_data ➔ df_raw 매개변수 참조 오류 교정)
     # ====================================================================
-    if df_proc is None or raw_data is None or len(raw_data) < 10:
+    if df_proc is None or df_raw is None or len(df_raw) < 10:
         st.warning("데이터가 부족하여 해당 탭의 차트를 생성할 수 없습니다.")
         return None
 
@@ -2797,9 +2795,10 @@ elif sector == "🔍 직접 이름/티커 검색":
         safe_ticker, selected_name = "TSLA", "Tesla"
 
 # -------------------------------------------------------------------
-# [분기점 2] 유저가 요청한 실시간 뉴스 매크로 관제탑 메뉴를 선택했을 때
+# [분기점 2] 유저가 요청한 실시간 뉴스 매크로 관제탑 메뉴를 선택했을 때 (세션 주입 교정)
 # -------------------------------------------------------------------
 elif sector == "🌏 글로벌 실시간 증시 뉴스":
+    st.session_state['is_macro_mode'] = True  # 세션 상태에 직접 True 주입
     is_macro_mode = True
     safe_ticker, selected_name = None, "글로벌 매크로 시황"
 
@@ -2807,18 +2806,8 @@ elif sector == "🌏 글로벌 실시간 증시 뉴스":
 # [분기점 3] 일반 주식 섹터(국내, 미국, 코인)를 선택해 탐색할 때
 # -------------------------------------------------------------------
 else:
+    st.session_state['is_macro_mode'] = False
     raw_ticker_list = list(ASSETS[sector].keys())
-    ticker_list = [k for k in raw_ticker_list if not any(x in k for x in ["등극주", "시총", "주요통화"])]
-    
-    # 🟢 섹터가 변경되었으면 인덱스 및 선택 상태 초기화
-    if 'current_sector' not in st.session_state or st.session_state.current_sector != sector:
-        st.session_state.current_sector = sector
-        st.session_state.current_idx = 0
-        st.session_state['sb_ticker_select'] = ticker_list[0]
-
-    # 🟢 사용자가 마우스로 직접 selectbox를 바꿨을 때, 버튼 인덱스(current_idx)도 자동 동기화 (양방향 연결)
-    if 'sb_ticker_select' in st.session_state and st.session_state.sb_ticker_select in ticker_list:
-        st.session_state.current_idx = ticker_list.index(st.session_state.sb_ticker_select)
         
     if 'current_idx' not in st.session_state or st.session_state.current_idx >= len(ticker_list):
         st.session_state.current_idx = 0
@@ -3327,53 +3316,54 @@ def run_heavy_backtest_engine(df_back):
             continue  # 미체결 종목은 백테스트 대상에서 제외하여 승률 왜곡 차단
             
         # ====================================================================
-        # 🎯 [3단계 보완] 1~10봉 전용 추세 대응 청산 (5일선 이탈 + 10봉 시간제한)
+        # 🎯 [PRO QUANT 개편] 손익비 2.0 : 1 강제 구조화 및 Break-Even 가동
         # ====================================================================
-        sl_hard_target = entry_p * 0.960  # -4.0% 하드 손절선
-        tp_target = entry_p * 1.050       # 1차 익절 타깃 (+5.0%)
+        sl_hard_target = entry_p * 0.975  # -2.5% 타이트 손절선 (Hard Cap)
+        tp_target = entry_p * 1.050       # +5.0% 1차 익절 타깃 (R:R = 2.0 : 1)
         
-        # 보유 기간을 최대 10봉(2주)으로 엄격히 제약
         available_bars = min(10, len(df_back) - pos - 1)
-        
         weight_remaining = 1.0
         realized_pnl = 0.0
         is_tp_done = False
 
         for d in range(1, available_bars + 1):
             curr_idx = pos + d
+            c_open_d = float(df_back['Open'].iloc[curr_idx])
             c_low_d = float(df_back['Low'].iloc[curr_idx])
             c_high_d = float(df_back['High'].iloc[curr_idx])
             c_close_d = float(df_back['Close'].iloc[curr_idx])
             c_ma5_d = float(df_back['MA_5'].iloc[curr_idx])
 
-            # 1) -4.0% 하드 손절선 터치 시 즉시 전량 청산
+            # 💡 Break-Even: 주가가 +3.0% 이상 상승 경험 시, 손절가를 매수가 +0.3%로 상향
+            if ((c_high_d - entry_p) / entry_p) >= 0.030:
+                sl_hard_target = max(sl_hard_target, entry_p * 1.003)
+
+            # 1) -2.5% 손절 터치 시 ➔ 시가 갭하락 음봉 손절 오차 보정 연산
             if c_low_d <= sl_hard_target:
-                realized_pnl += weight_remaining * ((sl_hard_target - entry_p) / entry_p)
+                # 시가 자체가 손절가보다 낮게 갭하락 개장한 경우 ➔ 시가 체결 반영
+                actual_exit_price = c_open_d if c_open_d <= sl_hard_target else sl_hard_target
+                realized_pnl += weight_remaining * ((actual_exit_price - entry_p) / entry_p)
                 weight_remaining = 0.0
                 break
 
-            # 2) +5.0% 달성 시 물량 절반(50%) 익절 확정
+            # 2) +5.0% 달성 시 물량 절반(50%) 익절
             if not is_tp_done and c_high_d >= tp_target:
                 realized_pnl += 0.5 * ((tp_target - entry_p) / entry_p)
                 weight_remaining -= 0.5
                 is_tp_done = True
 
-            # 3) 단기 관성선(5일 이동평균선) 종가 이탈 시 잔여 물량 전량 청산
+            # 3) 5일 이동평균선 종가 이탈 시 잔여 물량 추세 청산 (Trailing Stop)
             if c_close_d < c_ma5_d:
                 realized_pnl += weight_remaining * ((c_close_d - entry_p) / entry_p)
                 weight_remaining = 0.0
                 break
 
-        # 10봉(2주) 경과 시까지 이탈 신호가 없으면 10일차 종가에 강제 수익 확정
         if weight_remaining > 0:
             last_close = float(df_back['Close'].iloc[pos + available_bars])
             realized_pnl += weight_remaining * ((last_close - entry_p) / entry_p)
 
-        # ====================================================================
-        # 🎯 [4단계 보완] 실전 체결 오차(슬리피지 + 수수료 -0.3%) 패널티 차감
-        # ====================================================================
-        slippage_penalty = 0.003  # 0.3% 슬리피지 및 제세공과금 반영
-        final_trade_return = realized_pnl - slippage_penalty
+        # 💡 슬리피지 및 제세공과금 -0.25% 차감
+        final_trade_return = realized_pnl - 0.0025
 
         trade_returns.append(final_trade_return)
         is_win_list.append(final_trade_return > 0)
@@ -3535,14 +3525,16 @@ def calculate_smart_entry_price(df_proc, ai_data):
     # 📉 [유형 2: 메리츠금융지주] 모멘텀 둔화 / 윗꼬리 / 상단 저항 / 거래량 미달 스윙주 ➔ 20일선(또는 10일선) 깊은 눌림 대기
     # ------------------------------------------------------------
     elif is_resisted_or_fading or rvol < 1.5:
+        # 💡 20일선/10일선이 현재가보다 너무 멀어 -7% 이격제한 필터에 걸려 탈락하는 현상 방지 (최대 -3.5% 하한 캡)
+        min_entry_cap = c_close * 0.965
         if ma20 < c_close and ma20 > 0:
-            final_entry = ma20
+            final_entry = max(ma20, min_entry_cap)
             tag = "🎯 [실제 20일선] 세력 심리선 지지 진입"
         elif ma10 < c_close and ma10 > 0:
-            final_entry = ma10
+            final_entry = max(ma10, min_entry_cap)
             tag = "🎯 [실제 10일선] 깊은 눌림 지지 진입"
         else:
-            final_entry = ma5
+            final_entry = max(ma5, min_entry_cap)
             tag = "🎯 [실제 5일선] 마디선 지지 진입"
 
     # ------------------------------------------------------------
@@ -3632,13 +3624,13 @@ def evaluate_stock_signal(df_proc, ai_data):
         pattern_score += 10; sig_tags.append("3연속양봉")
 
     # ------------------------------------------------------------
-    # 🛡️ 90% 승률 커트라인 (패턴 점수 75점 미만 배제)
+    # 🛡️ [PRO QUANT 개편] 손익비 2.0 : 1 고정 (목표 +5.0% / 손절 -2.5%)
     # ------------------------------------------------------------
     if pattern_score < 75:
         return None, 0.0, 0.0, ""
 
     exp_win = min(88.0 + (pattern_score * 0.1), 98.0)
-    exp_ret = float(ai_data.get('upside', 4.0))
+    exp_ret = 5.0  # 1차 익절 고정 목표가 +5.0% (R:R = 2.0 : 1)
 
     unique_tags = list(dict.fromkeys([entry_tag] + sig_tags))
     full_signal = " / ".join(unique_tags)
@@ -3723,11 +3715,11 @@ def run_unified_quant_eval(df_sub, name, ticker):
             "entry_p": calc_entry_sw,
             "up_prob": round(up_p_sw, 1), 
             "exp_win": round(up_p_sw, 1),
-            "upside": round(up_s_sw, 1), 
-            "exp_ret": round(up_s_sw, 1),
-            "composite_score": round((up_p_sw * 0.7) + (up_s_sw * 3.0), 2),
+            "upside": 5.0,  # +5.0% 고정 익절선 (R:R = 2.0 : 1)
+            "exp_ret": 5.0,
+            "composite_score": round((up_p_sw * 0.7) + (5.0 * 3.0), 2),
             "signal": sig_sw, 
-            "score": (up_p_sw * 0.5) + (up_s_sw * 4.0),
+            "score": (up_p_sw * 0.5) + (5.0 * 4.0),
             "adx": round(adx_val, 1)
         }
 
@@ -3909,10 +3901,30 @@ def bg_scan_worker(assets_dict):
     st.session_state['scan_surge_kr'] = sorted(results_surge_kr, key=lambda x: x.get('composite_score', 0), reverse=True)[:10]
     st.session_state['scan_surge_us'] = sorted(results_surge_us, key=lambda x: x.get('composite_score', 0), reverse=True)[:10]
 
+    # 📱 [PRO QUANT 추가] 텔레그램 90%+ 고확신 시그널 실시간 웹훅 발송 연동
+    tg_token = st.session_state.get('sb_tg_token', '')
+    tg_chat_id = st.session_state.get('sb_tg_chat_id', '')
+
+    if tg_token and tg_chat_id:
+        all_top_picks = (st.session_state['scan_results_kr'] + 
+                         st.session_state['scan_results_us'] + 
+                         st.session_state['scan_results_coin'])
+        
+        for pick in all_top_picks:
+            if pick.get('up_prob', 0.0) >= 90.0:
+                msg = (
+                    f"🚨 *[PRO QUANT 90%+ 고확신 시그널 포착]*\n\n"
+                    f"📌 *종목명*: {pick['name']} ({pick['ticker']})\n"
+                    f"🎯 *권장 진입가*: {pick['entry_p']}\n"
+                    f"🔴 *1차 목표가 (+5.0%)*: {round(pick['entry_p'] * 1.05, 2)}\n"
+                    f"🔵 *강제 손절가 (-2.5%)*: {round(pick['entry_p'] * 0.975, 2)}\n"
+                    f"🔥 *알고리즘 확신도*: {pick['up_prob']}%\n"
+                    f"🔍 *충족 시그널*: {pick['signal']}"
+                )
+                send_telegram_alert(tg_token, tg_chat_id, msg)
+
     progress_bar.progress(1.0)
     status_box.success(f"✅ 초고속 스캔 완료! (안정 스윙 & 10%+ 초급등주 동시 추출 완료)")
-
-
 
 # ====================================================================
 # 메인 탭 선언 및 레이아웃 분리
@@ -4233,37 +4245,33 @@ with main_tab2:
                     # 💡 [대형 파동 판별] RVOL 폭발, 급등, 60일 신고가 태그 포함 여부
                     is_super_wave = any(k in item.get('signal', '') for k in ["🚀RVOL", "대형파동", "신고가", "장대양봉", "추격"])
 
-                    # 🎯 [1. 익절 판정]
-                    tp1_price = actual_entry * 1.035
-                    tp2_price = actual_entry * 1.100  # 대형 파동 2차 목표 (+10.0%)
+                    # 🎯 [PRO QUANT 개편] 손익비 2.0 : 1 및 Break-Even 청산 수식
+                    sl_price = actual_entry * 0.975  # -2.5% 타이트 손절선
+                    tp1_price = actual_entry * 1.050 # +5.0% 1차 익절선 (R:R = 2.0 : 1)
+                    tp2_price = actual_entry * 1.090 # +9.0% 2차 익절선
+
+                    # 💡 Break-Even: +3.0% 이상 고가 형성 시 손절가를 매수가 +0.3%로 즉시 상향
+                    if max_ret >= 3.0:
+                        sl_price = max(sl_price, actual_entry * 1.003)
 
                     if is_super_wave:
-                        # 🚀 [대형 파동주]: +0.5% 쥐꼬리 방어선 해제! 10%~20% 터질 때까지 대파동 추종
+                        # 🚀 [대형 파동주]: 2차 목표(+9.0%) 도달 시 50% 익절
                         if eff_high >= tp2_price and remaining_qty == 1.0:
-                            realized_ret += 0.50 * 0.10  # 10% 지점에서 절반 익절
+                            realized_ret += 0.50 * 0.090
                             remaining_qty -= 0.50
-                            action_events.append("대파동 1차 익절 (+10.0%)")
+                            action_events.append("대파동 익절 (+9.0%)")
                     else:
-                        # 🛡️ [일반 스윙주]: 기존 +3.5% 1차 익절 및 +0.5% 방어선 유지
+                        # 🛡️ [일반 스윙주]: 1차 목표(+5.0%) 도달 시 50% 익절
                         if eff_high >= tp1_price and remaining_qty == 1.0:
-                            realized_ret += 0.50 * 0.035
+                            realized_ret += 0.50 * 0.050
                             remaining_qty -= 0.50
-                            action_events.append("1차 익절 (+3.5%)")
+                            action_events.append("1차 익절 (+5.0%)")
 
-                        # 일반주만 +0.5% 수익 방어 스탑 가동
-                        if max_ret >= 2.0 and remaining_qty > 0 and not just_bought_today:
-                            if b_low <= actual_entry * 1.005:
-                                realized_ret += remaining_qty * 0.005
-                                action_events.append("수익 방어 (+0.5%)")
-                                remaining_qty = 0.0
-                                is_closed = True
-                                break
-
-                    # 🛑 [2. -3.0% 원칙 손절] (동일 적용)
-                    if b_low <= sl_price and remaining_qty > 0:
+                    # 🛑 [-2.5% 또는 Break-Even 손절]
+                    if b_low <= sl_price and remaining_qty > 0 and not just_bought_today:
                         actual_loss_pct = ((min(b_open, sl_price) - actual_entry) / actual_entry)
                         realized_ret += remaining_qty * actual_loss_pct
-                        action_events.append(f"강제 손절 ({actual_loss_pct*100:.1f}%)")
+                        action_events.append(f"손절/본절방어 ({actual_loss_pct*100:+.1f}%)")
                         remaining_qty = 0.0
                         is_closed = True
                         break
