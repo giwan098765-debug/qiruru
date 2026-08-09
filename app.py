@@ -4423,11 +4423,12 @@ def scan_all_historical_midterm_signals(assets_dict):
                         row_h, row_l, row_c = float(row['High']), float(row['Low']), float(row['Close'])
                         row_ma200 = float(row.get('MA_200', row_c))
 
-                        # 물타기: -30% 조정 시 1:1 동일 금액 추매
-                        if (row_l - avg_entry) / avg_entry <= -0.30:
-                            total_cost += avg_entry
-                            avg_entry = (avg_entry * current_qty + row_l) / (current_qty + 1.0)
-                            current_qty += 1.0
+                       # 물타기: 평단가 대비 -30% 하락 시 1:1 동일 금액 추매 (수익률 -15%로 즉시 재조정)
+                        # 이후 하향된 평단가 대비 또 -30% 하락 시 연쇄 물타기 수행
+                        while (row_l - avg_entry) / avg_entry <= -0.30:
+                            total_cost *= 2.0                      # 1:1 동일 금액 추가 투입 (원금 2배)
+                            avg_entry = avg_entry * (14.0 / 17.0)  # 평단가 하향 조정 (현재가 기준 수익률 -15% 형성)
+                            current_qty = total_cost / avg_entry   # 보유 수량 재산출
 
                         # 1차 익절 (+25% 도달 시 35% 부분 청산)
                         if (row_h - avg_entry) / avg_entry >= 0.25 and not tp1_done and current_qty > 0:
@@ -4474,7 +4475,8 @@ def scan_all_historical_midterm_signals(assets_dict):
 
                     fmt_entry = f"₩{avg_entry:,.0f}" if is_krw else f"${avg_entry:,.2f}"
                     fmt_price_val = f"₩{curr_p:,.0f}" if is_krw else f"${curr_p:,.2f}"
-                    fmt_curr = f"<span style='color:#ffffff;'>{fmt_price_val}</span> <span style='color:{ret_color}; font-weight:bold;'>({sign_str}{curr_ret:.1f}%)</span>"
+                    # HTML 태그 제거 (st.dataframe에서 태그 코드가 텍스트로 출력되는 오류 방지)
+                    fmt_curr = f"{fmt_price_val} ({sign_str}{curr_ret:.1f}%)"
 
                     hits.append({
                         "시장": m_label,
@@ -5161,19 +5163,19 @@ with main_tab3:
         cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "최대 파동 수익률 (%)", "추천 매매 대응", "누적 실전 PnL (%)"]
         table_df = df_display[cols_to_show]
 
-        # 💡 [눈이 편한 파스텔 톤 색상 스타일링 함수]
+        # 💡 [st.dataframe 전용 Pandas Styler 색상 적용 함수]
         def style_pnl_colors(val):
             if isinstance(val, (int, float)):
                 if val > 0:
-                    return 'color: #f87171; font-weight: bold;'  # 눈 안 아픈 파스텔 코랄레드 (+)
+                    return 'color: #ff4b4b; font-weight: bold;'  # 수익 (빨강)
                 elif val < 0:
-                    return 'color: #60a5fa; font-weight: bold;'  # 눈 안 아픈 파스텔 소프트블루 (-)
-                return 'color: #9ca3af;'  # 0% 회색
+                    return 'color: #38bdf8; font-weight: bold;'  # 손실 (파랑)
+                return 'color: #ffffff;'                        # 0% (흰색)
             elif isinstance(val, str):
                 if '(+' in val:
-                    return 'color: #f87171; font-weight: bold;'  # 현재가 내 (+)
+                    return 'color: #ff4b4b; font-weight: bold;'  # 수익 (빨강)
                 elif '(-' in val:
-                    return 'color: #60a5fa; font-weight: bold;'  # 현재가 내 (-)
+                    return 'color: #38bdf8; font-weight: bold;'  # 손실 (파랑)
             return ''
 
         # Pandas Styler 적용
