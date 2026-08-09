@@ -3763,25 +3763,26 @@ def evaluate_advanced_trade_signal(df_proc, ticker, name, c_close, entry_p, max_
     ret_3m = ((c_close - c_60b) / c_60b) * 100.0 if c_60b > 0 else 0.0
     is_leading = (ret_3m >= 10.0) and (c_close >= ma200) and (ma20 >= ma200)
 
-    # 1️⃣ [동적 매도 / 트레일링 스탑] (수익 극대화 청산)
-    if curr_ret >= 20.0:
-        if drop_from_peak >= 10.0 or peak_signals >= 2:
-            return f"🚨 [상투/트레일링스탑] ({latest_date_str})", "전량 매도 (수익 최종 확정)"
-        if curr_ret >= 50.0 or (curr_ret >= 40.0 and peak_signals >= 1):
-            return f"💰 [2차 동적 익절] ({latest_date_str})", "보유 수량 30~40% 매도"
-        if curr_ret >= 25.0 and (rsi_val >= 68.0 or pct_b >= 0.85):
-            return f"💰 [1차 동적 익절] ({latest_date_str})", "보유 수량 30~40% 매도 (원금 회수)"
+    # 1️⃣ [매도/익절/손절 상태 정밀 분기]
+    if drop_from_peak >= 10.0 or peak_signals >= 2 or (curr_ret >= 20.0 and c_close < ma5):
+        return f"🚨 [상투/트레일링스탑] ({latest_date_str})", "익일 시초가 즉시 전량 매도 (수익 최종 확정)"
+    if curr_ret >= 50.0:
+        return f"💰 [2차 동적 익절] ({latest_date_str})", "+50% 도달 시 30~40% 부분 청산"
+    if curr_ret >= 25.0:
+        return f"💰 [1차 동적 익절] ({latest_date_str})", "+25% 도달 시 30~40% 부분 청산"
+    if c_close < ma200 or curr_ret <= -20.0:
+        return f"⚠️ [리스크관리/손절] ({latest_date_str})", "200일선 이탈 시 전량 손절"
+    if curr_ret <= -10.0 or (macd_curr < signal_curr and macd_hist_curr < 0):
+        return f"⚠️ [리스크관리/손절] ({latest_date_str})", "추세 약화 시 50% 비중 축소"
+    if -30.0 <= curr_ret <= -15.0:
+        return f"💧 [우량주 물타기] ({latest_date_str})", "-15~-30% 조정 시 1:1 동일금액 추매 (평단 하향)"
+    if curr_ret > 0 and (108.0 < disp_20 <= 112.0 or 60.0 < rsi_val <= 68.0):
+        return f"🔥 [추세 재진입] ({latest_date_str})", "보유자 불타기 (원금의 +30~50% 추가 적립)"
+    if disp_20 <= 108.0 and rsi_val <= 60.0:
+        weight_str = "주도주 12~15%" if is_leading else "일반 8~10%"
+        return f"🎯 [신규 눌림목] ({latest_date_str})", f"최초 진입 ({weight_str})"
 
-    # 2️⃣ [물타기 / 리스크 손절 판정] (진입가 대비 손실 중)
-    if curr_ret < 0:
-        if c_close < ma200 or (macd_curr < signal_curr and macd_hist_curr <= 0):
-            if curr_ret <= -15.0:
-                return f"🚨 [추세 훼손/손절] ({latest_date_str})", "전량 손절 매도 (추세 이탈)"
-            else:
-                return f"⚠️ [리스크 관리] ({latest_date_str})", "50% 비중 축소 (추세 약화)"
-        if -30.0 <= curr_ret <= -15.0:
-            return f"💧 [우량주 물타기] ({latest_date_str})", "기존 투자금 100% 동일금액 추가 매수"
-        return f"🔵 [단기 눌림 관망] ({latest_date_str})", "추가 매수 대기 (20일선 안착 확인)"
+    return f"🟢 [보유/추세 추종] ({latest_date_str})", "잔량 홀딩"
 
     # 3️⃣ [추세 재진입 / 불타기 판정] (수익 중 + 대시세 연장)
     if curr_ret > 0 and (108.0 < disp_20 <= 112.0 or 60.0 < rsi_val <= 68.0) and macd_curr >= signal_curr:
@@ -4403,48 +4404,77 @@ def scan_all_historical_midterm_signals(assets_dict):
                 raw_hit_date = df_proc['Date'].iloc[pos]
                 hit_date_str = pd.to_datetime(raw_hit_date).strftime('%Y-%m-%d')
                 entry_p = round(min(c_close * 0.99, ma20), 2)
-                
+
                 after_df = df_proc.iloc[pos + 1:]
                 if not after_df.empty:
                     curr_p = float(df_proc['Close'].iloc[-1])
                     max_p = float(after_df['High'].max())
                     min_p = float(after_df['Low'].min())
 
-                    # 💡 당시 대응 시그널 추출
-                    df_sub = df_proc.iloc[:pos + 1]
-                    action_status, rec_weight = evaluate_advanced_trade_signal(df_sub, ticker, name, c_close, entry_p, max_p, min_p)
+                    # 물타기(-30% 1:1 추매) & 1차/2차/손절/상투 실전 PnL 시뮬레이션
+                    avg_entry = entry_p
+                    total_cost = entry_p
+                    current_qty = 1.0
+                    realized_profit = 0.0
+                    tp1_done = False
+                    tp2_done = False
 
-                    # 1️⃣ 동일 종목 이전 진입 기록이 있으면 '🎯 [신규 눌림목]' ➔ '🔥 [추세 재진입]' 또는 '💧 [물타기]'로 강제 보정
+                    for _, row in after_df.iterrows():
+                        row_h, row_l, row_c = float(row['High']), float(row['Low']), float(row['Close'])
+                        row_ma200 = float(row.get('MA_200', row_c))
+
+                        # 물타기: -30% 조정 시 1:1 동일 금액 추매
+                        if (row_l - avg_entry) / avg_entry <= -0.30:
+                            total_cost += avg_entry
+                            avg_entry = (avg_entry * current_qty + row_l) / (current_qty + 1.0)
+                            current_qty += 1.0
+
+                        # 1차 익절 (+25% 도달 시 35% 부분 청산)
+                        if (row_h - avg_entry) / avg_entry >= 0.25 and not tp1_done and current_qty > 0:
+                            sell_q = current_qty * 0.35
+                            realized_profit += sell_q * (row_h - avg_entry)
+                            current_qty -= sell_q
+                            tp1_done = True
+
+                        # 2차 익절 (+50% 도달 시 35% 추가 청산)
+                        if (row_h - avg_entry) / avg_entry >= 0.50 and not tp2_done and current_qty > 0:
+                            sell_q = current_qty * 0.35
+                            realized_profit += sell_q * (row_h - avg_entry)
+                            current_qty -= sell_q
+                            tp2_done = True
+
+                        # 손절 (200일선 이탈 시 잔량 전량 손절)
+                        if row_c < row_ma200 and current_qty > 0:
+                            realized_profit += current_qty * (row_c - avg_entry)
+                            current_qty = 0
+                            break
+
+                    # 실현 손익 + 미실현 잔량 손익 합산하여 최종 실전 PnL 산출
+                    unrealized_profit = current_qty * (curr_p - avg_entry) if current_qty > 0 else 0.0
+                    total_pnl_val = realized_profit + unrealized_profit
+                    cum_pnl = round((total_pnl_val / total_cost) * 100.0, 1)
+
+                    # 대응 시그널 추출
+                    action_status, rec_weight = evaluate_advanced_trade_signal(df_proc, ticker, name, curr_p, avg_entry, max_p, min_p)
+
+                    # 동일 종목 재진입 보정
                     if name in first_entry_tracker:
                         prev_p = first_entry_tracker[name]
                         if "🎯 [신규 눌림목]" in action_status:
-                            if c_close >= prev_p:
-                                action_status = action_status.replace("🎯 [신규 눌림목]", "🔥 [추세 재진입]")
-                            else:
-                                action_status = action_status.replace("🎯 [신규 눌림목]", "💧 [우량주 물타기]")
+                            action_status = action_status.replace("🎯 [신규 눌림목]", "🔥 [추세 재진입]" if curr_p >= prev_p else "💧 [우량주 물타기]")
                     else:
-                        first_entry_tracker[name] = entry_p
+                        first_entry_tracker[name] = avg_entry
 
-                    # 2️⃣ 매도/익절 시그널(💰, 🚨)이 없는 상태에서는 누적 실전 PnL 무조건 0.0%
-                    realized_pnl = 0.0
-                    if "1차" in action_status:
-                        realized_pnl = round(0.35 * 25.0, 1)
-                    elif "2차" in action_status:
-                        realized_pnl = round(0.35 * 25.0 + 0.35 * 50.0, 1)
-                    elif "🚨" in action_status:
-                        next_open = float(after_df['Open'].iloc[0]) if len(after_df) > 0 else curr_p
-                        open_exit_ret = ((next_open - entry_p) / entry_p) * 100.0
-                        realized_pnl = round(open_exit_ret, 1)
+                    curr_ret = round(((curr_p - avg_entry) / avg_entry) * 100.0, 1)
+                    max_ret = round(((max_p - avg_entry) / avg_entry) * 100.0, 1)
 
-                    cum_pnl = realized_pnl
-                    curr_ret = round(((curr_p - entry_p) / entry_p) * 100.0, 1)
-                    max_ret = round(((max_p - entry_p) / entry_p) * 100.0, 1)
-                        
                     is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
                     sign_str = "+" if curr_ret >= 0 else ""
-                    
-                    fmt_entry = f"₩{entry_p:,.0f}" if is_krw else f"${entry_p:,.2f}"
-                    fmt_curr = f"₩{curr_p:,.0f} ({sign_str}{curr_ret:.1f}%)" if is_krw else f"${curr_p:,.2f} ({sign_str}{curr_ret:.1f}%)"
+                    ret_color = "#f87171" if curr_ret > 0 else ("#60a5fa" if curr_ret < 0 else "#ffffff")
+
+                    fmt_entry = f"₩{avg_entry:,.0f}" if is_krw else f"${avg_entry:,.2f}"
+                    fmt_price_val = f"₩{curr_p:,.0f}" if is_krw else f"${curr_p:,.2f}"
+                    fmt_curr = f"<span style='color:#ffffff;'>{fmt_price_val}</span> <span style='color:{ret_color}; font-weight:bold;'>({sign_str}{curr_ret:.1f}%)</span>"
 
                     hits.append({
                         "시장": m_label,
@@ -4455,7 +4485,7 @@ def scan_all_historical_midterm_signals(assets_dict):
                         "최대 파동 수익률 (%)": max_ret,
                         "추천 매매 대응": action_status,
                         "누적 실전 PnL (%)": cum_pnl,
-                        "raw_curr_ret": curr_ret  # 💡 PF/승률 정상 계산을 위해 실제 손익률(curr_ret) 바인딩
+                        "raw_curr_ret": curr_ret
                     })
             return hits
         except Exception:
