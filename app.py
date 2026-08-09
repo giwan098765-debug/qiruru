@@ -4410,52 +4410,48 @@ def scan_all_historical_midterm_signals(assets_dict):
                     max_p = float(after_df['High'].max())
                     min_p = float(after_df['Low'].min())
 
-                    # 물타기 실행 여부 반영 (-15% 이하 조정 시 1:1 추매 ➔ 평단가 하향)
+                    # 물타기 실행 여부 반영 (-15% 이하 조정 시 1:1 추가 매수 ➔ 평단가 하향)
                     avg_entry = entry_p
                     if min_p <= entry_p * 0.85:
                         avg_entry = (entry_p + (entry_p * 0.85)) / 2.0
 
-                    # 💡 1차(+25%), 2차(+50%) 익절 달성 여부 수학적 직접 판정
-                    has_tp1 = max_p >= avg_entry * 1.25
-                    has_tp2 = max_p >= avg_entry * 1.50
+                    # 최신 차트 전체 기준 최종 매매 대응 시그널 추출
+                    action_status, rec_weight = evaluate_advanced_trade_signal(df_proc, ticker, name, curr_p, avg_entry, max_p, min_p)
 
-                    # 🎯 1. 실전 확정 및 평가 PnL 종합 계산
+                    # 동일 종목 이전 진입 기록이 있을 경우 라벨 보정
+                    if name in first_entry_tracker:
+                        prev_p = first_entry_tracker[name]
+                        if "🎯 [신규 눌림목]" in action_status:
+                            if curr_p >= prev_p:
+                                action_status = action_status.replace("🎯 [신규 눌림목]", "🔥 [추세 재진입]")
+                            else:
+                                action_status = action_status.replace("🎯 [신규 눌림목]", "💧 [우량주 물타기]")
+                    else:
+                        first_entry_tracker[name] = entry_p
+
+                    # 💡 [핵심] 분할 익절 + 손절/상투 + 남은 잔량 현재가 종합 PnL 시뮬레이션
                     realized_pnl = 0.0
                     remaining_qty = 1.0
 
-                    if has_tp1:
-                        realized_pnl += 0.35 * 25.0  # 1차 익절 35% 물량 (+8.75%p 확정)
-                        remaining_qty -= 0.35
-                    if has_tp2:
-                        realized_pnl += 0.35 * 50.0  # 2차 익절 35% 물량 (+17.50%p 확정)
+                    # 1) 1차 익절 (+25% 달성 시 35% 수량 확정)
+                    if max_p >= avg_entry * 1.25:
+                        realized_pnl += 0.35 * 25.0
                         remaining_qty -= 0.35
 
+                    # 2) 2차 익절 (+50% 달성 시 35% 추가 확정)
+                    if max_p >= avg_entry * 1.50:
+                        realized_pnl += 0.35 * 50.0
+                        remaining_qty -= 0.35
+
+                    # 3) 상투/손절 신호 발생 시 잔량 청산 or 보유 잔량 현재가 평가
                     curr_ret_raw = ((curr_p - avg_entry) / avg_entry) * 100.0
-
-                    # 🎯 2. 대응 라벨 결정 (최고가 달성 기준 우선 반영)
-                    df_sub = df_proc.iloc[:pos + 1]
-                    raw_action, rec_weight = evaluate_advanced_trade_signal(df_sub, ticker, name, c_close, entry_p, max_p, min_p)
-
-                    if "🚨" in raw_action:
+                    if "🚨" in action_status or "⚠️" in action_status:
                         next_open = float(after_df['Open'].iloc[0]) if len(after_df) > 0 else curr_p
                         exit_ret = ((next_open - avg_entry) / avg_entry) * 100.0
                         realized_pnl += remaining_qty * exit_ret
-                        action_status = raw_action
-                    elif has_tp2:
-                        realized_pnl += remaining_qty * curr_ret_raw
-                        action_status = f"💰 [2차 익절 완료 / 잔량 홀딩] ({hit_date_str})"
-                    elif has_tp1:
-                        realized_pnl += remaining_qty * curr_ret_raw
-                        action_status = f"💰 [1차 익절 완료 / 잔량 홀딩] ({hit_date_str})"
                     else:
+                        # 아직 보유 중이면 남은 잔량(30%~)에 현재 수익률 반영
                         realized_pnl += remaining_qty * curr_ret_raw
-                        if name in first_entry_tracker:
-                            prev_p = first_entry_tracker[name]
-                            action_status = f"🔥 [추세 재진입] ({hit_date_str})" if c_close >= prev_p else f"💧 [우량주 물타기] ({hit_date_str})"
-                        else:
-                            action_status = f"🎯 [신규 눌림목] ({hit_date_str})"
-
-                    first_entry_tracker[name] = entry_p
 
                     cum_pnl = round(realized_pnl, 1)
                     curr_ret = round(curr_ret_raw, 1)
@@ -4476,7 +4472,7 @@ def scan_all_historical_midterm_signals(assets_dict):
                         "최대 파동 수익률 (%)": max_ret,
                         "추천 매매 대응": action_status,
                         "누적 실전 PnL (%)": cum_pnl,
-                        "raw_curr_ret": cum_pnl
+                        "raw_curr_ret": cum_pnl  # PF 및 통계 집계용으로 누적 실전 PnL 전달
                     })
             return hits
         except Exception:
@@ -5148,49 +5144,17 @@ with main_tab3:
         </div>
         """, unsafe_allow_html=True)
 
-        # 💡 HTML 내부 들여쓰기 공백을 제거하여 마크다운 코드 블록 인식 현상 방지
-        html_table = """<style>
-.custom-pnl-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-    color: #ffffff;
-    background-color: #0f172a;
-    border-radius: 8px;
-    overflow: hidden;
-    border: 1px solid #334155;
-}
-.custom-pnl-table th {
-    background-color: #1e293b;
-    color: #94a3b8;
-    padding: 10px 12px;
-    border: 1px solid #334155;
-    text-align: center;
-    font-weight: bold;
-}
-.custom-pnl-table td {
-    padding: 10px 12px;
-    border: 1px solid #334155;
-    text-align: center;
-}
-.custom-pnl-table tr:hover {
-    background-color: #1e2230;
-}
-</style>
-<table class="custom-pnl-table">
-<thead>
-<tr>
-<th>시장</th>
-<th>종목명</th>
-<th>추천 포착 날짜</th>
-<th>추천 진입가</th>
-<th>현재가</th>
-<th>최대 파동 수익률</th>
-<th>추천 매매 대응</th>
-<th>누적 실전 PnL</th>
-</tr>
-</thead>
-<tbody>"""
+        # 💡 가격(흰색)과 수익률 괄호(색상)를 정밀 분리하는 HTML 표 생성
+                html_table = "<style>" \
+        ".custom-pnl-table { width: 100%; border-collapse: collapse; font-size: 13px; color: #ffffff; background-color: #0f172a; border-radius: 8px; overflow: hidden; border: 1px solid #334155; }" \
+        ".custom-pnl-table th { background-color: #1e293b; color: #94a3b8; padding: 10px 12px; border: 1px solid #334155; text-align: center; font-weight: bold; }" \
+        ".custom-pnl-table td { padding: 10px 12px; border: 1px solid #334155; text-align: center; }" \
+        ".custom-pnl-table tr:hover { background-color: #1e2230; }" \
+        "</style>" \
+        "<table class='custom-pnl-table'>" \
+        "<thead><tr>" \
+        "<th>시장</th><th>종목명</th><th>추천 포착 날짜</th><th>추천 진입가</th><th>현재가</th><th>최대 파동 수익률</th><th>추천 매매 대응</th><th>누적 실전 PnL</th>" \
+        "</tr></thead><tbody>"
 
         for _, row in df_display.iterrows():
             curr_str = str(row['현재가'])
@@ -5205,7 +5169,6 @@ with main_tab3:
                 else:
                     pct_html = f'<span style="color: #ffffff;">{pct_part}</span>'
                 
-                # 현재 금액(price_part)은 흰색 고정
                 curr_html = f'<span style="color: #ffffff; font-weight: bold;">{price_part}</span> {pct_html}'
             else:
                 curr_html = f'<span style="color: #ffffff; font-weight: bold;">{curr_str}</span>'
