@@ -3723,6 +3723,9 @@ def evaluate_advanced_trade_signal(df_proc, ticker, name, c_close, entry_p, max_
     latest = df_proc.iloc[-1]
     prev = df_proc.iloc[-2] if len(df_proc) >= 2 else latest
 
+    # 💡 신호 생성 기준 날짜 추출 (YY-MM-DD 포맷)
+    latest_date_str = pd.to_datetime(latest.get('Date', pd.Timestamp.now())).strftime('%y-%m-%d')
+
     # 주요 기술적 지표
     ma5 = float(latest.get('MA_5', c_close))
     ma20 = float(latest.get('MA_20', c_close))
@@ -3749,10 +3752,10 @@ def evaluate_advanced_trade_signal(df_proc, ticker, name, c_close, entry_p, max_
 
     # 4대 최고점(Peak) 피크 신호 감지
     peak_signals = 0
-    if rvol >= 2.5 and c_close < float(latest.get('Open', c_close)): peak_signals += 1  # 1. 거래량 클라이맥스 후 음봉
-    if disp_20 >= 118.0 or pct_b >= 0.92: peak_signals += 1                             # 2. 이격도 과열 & 볼밴 오버슈팅
-    if rsi_val >= 72.0 and macd_hist_curr < macd_hist_prev: peak_signals += 1          # 3. RSI/MACD 다이버전스
-    if c_close < ma5 and float(prev.get('Close', c_close)) >= float(prev.get('MA_5', c_close)): peak_signals += 1  # 4. 단기 추세선 이탈
+    if rvol >= 2.5 and c_close < float(latest.get('Open', c_close)): peak_signals += 1
+    if disp_20 >= 118.0 or pct_b >= 0.92: peak_signals += 1
+    if rsi_val >= 72.0 and macd_hist_curr < macd_hist_prev: peak_signals += 1
+    if c_close < ma5 and float(prev.get('Close', c_close)) >= float(prev.get('MA_5', c_close)): peak_signals += 1
 
     # 💡 3개월(60D) 주도주 동적 판정
     c_60b = float(df_proc['Close'].iloc[-60]) if len(df_proc) >= 60 else float(df_proc['Close'].iloc[0])
@@ -3761,35 +3764,34 @@ def evaluate_advanced_trade_signal(df_proc, ticker, name, c_close, entry_p, max_
 
     # 1️⃣ [동적 매도 / 트레일링 스탑] (수익 극대화 청산)
     if curr_ret >= 20.0:
-        # 고점 대비 -10% 이상 밀리거나 4대 피크 신호 2개 이상 동시 출현 시 상투 청산
         if drop_from_peak >= 10.0 or peak_signals >= 2:
-            return "🚨 [상투/트레일링스탑]", "전량 매도 (수익 최종 확정)"
+            return f"🚨 [상투/트레일링스탑] ({latest_date_str})", "전량 매도 (수익 최종 확정)"
         if curr_ret >= 50.0 or (curr_ret >= 40.0 and peak_signals >= 1):
-            return "💰 [2차 동적 익절]", "보유 수량 30~40% 매도"
+            return f"💰 [2차 동적 익절] ({latest_date_str})", "보유 수량 30~40% 매도"
         if curr_ret >= 25.0 and (rsi_val >= 68.0 or pct_b >= 0.85):
-            return "💰 [1차 동적 익절]", "보유 수량 30~40% 매도 (원금 회수)"
+            return f"💰 [1차 동적 익절] ({latest_date_str})", "보유 수량 30~40% 매도 (원금 회수)"
 
     # 2️⃣ [물타기 / 리스크 손절 판정] (진입가 대비 손실 중)
     if curr_ret < 0:
         if c_close < ma200 or (macd_curr < signal_curr and macd_hist_curr <= 0):
             if curr_ret <= -15.0:
-                return "🚨 [추세 훼손/손절]", "전량 손절 매도 (추세 이탈)"
+                return f"🚨 [추세 훼손/손절] ({latest_date_str})", "전량 손절 매도 (추세 이탈)"
             else:
-                return "⚠️ [리스크 관리]", "50% 비중 축소 (추세 약화)"
+                return f"⚠️ [리스크 관리] ({latest_date_str})", "50% 비중 축소 (추세 약화)"
         if -30.0 <= curr_ret <= -15.0:
-            return "💧 [우량주 물타기]", "기존 투자금 100% 동일금액 추가 매수"
-        return "🔵 [단기 눌림 관망]", "추가 매수 대기 (20일선 안착 확인)"
+            return f"💧 [우량주 물타기] ({latest_date_str})", "기존 투자금 100% 동일금액 추가 매수"
+        return f"🔵 [단기 눌림 관망] ({latest_date_str})", "추가 매수 대기 (20일선 안착 확인)"
 
     # 3️⃣ [추세 재진입 / 불타기 판정] (수익 중 + 대시세 연장)
     if curr_ret > 0 and (108.0 < disp_20 <= 112.0 or 60.0 < rsi_val <= 68.0) and macd_curr >= signal_curr:
-        return "🔥 [추세 재진입]", "기존 투자금의 +30%~+50% 추가 적립"
+        return f"🔥 [추세 재진입] ({latest_date_str})", "기존 투자금의 +30%~+50% 추가 적립"
 
     # 4️⃣ [신규 눌림목 진입 판정] (안전한 최초 진입 타점)
     if disp_20 <= 108.0 and rsi_val <= 60.0 and macd_curr >= signal_curr:
         weight_str = "포트폴리오 비중 12~15% (3M 주도 섹터)" if is_leading else "포트폴리오 비중 8~10%"
-        return "🎯 [신규 눌림목]", weight_str
+        return f"🎯 [신규 눌림목] ({latest_date_str})", weight_str
 
-    return "🟢 [보유/추세 추종]", "잔량 홀딩"
+    return f"🟢 [보유/추세 추종] ({latest_date_str})", "잔량 홀딩"
 
     # ====================================================================
 # 🚀 [1~5봉 내 10%+ 초급등주(Surge Stock) 전용 정밀 스캐너 Engine]
