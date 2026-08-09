@@ -4407,40 +4407,34 @@ def scan_all_historical_midterm_signals(assets_dict):
                     curr_p = float(df_proc['Close'].iloc[-1])
                     max_p = float(after_df['High'].max())
                     min_p = float(after_df['Low'].min())
-                    
-                    # 💡 실제 매도 확정분만 반영하는 누적 실전 PnL 및 현재가(+%) 연산
+
+                    # 💡 당시 대응 시그널 추출
                     df_sub = df_proc.iloc[:pos + 1]
                     action_status, rec_weight = evaluate_advanced_trade_signal(df_sub, ticker, name, c_close, entry_p, max_p, min_p)
 
-                    next_open = float(after_df['Open'].iloc[0]) if len(after_df) > 0 else curr_p
+                    # 1️⃣ 동일 종목 이전 진입 기록이 있으면 '🎯 [신규 눌림목]' ➔ '🔥 [추세 재진입]' 또는 '💧 [물타기]'로 강제 보정
+                    if name in first_entry_tracker:
+                        prev_p = first_entry_tracker[name]
+                        if "🎯 [신규 눌림목]" in action_status:
+                            if c_close >= prev_p:
+                                action_status = action_status.replace("🎯 [신규 눌림목]", "🔥 [추세 재진입]")
+                            else:
+                                action_status = action_status.replace("🎯 [신규 눌림목]", "💧 [우량주 물타기]")
+                    else:
+                        first_entry_tracker[name] = entry_p
 
-                    # 물타기 실행 여부 반영 (-15% 이하 시 동일금액 추매 ➔ 평단가 하향)
-                    avg_entry = entry_p
-                    if min_p <= entry_p * 0.85:
-                        avg_entry = (entry_p + (entry_p * 0.85)) / 2.0
-
-                    # 1차(+25%), 2차(+50%) 익절 달성 여부 확인
-                    has_tp1 = max_p >= avg_entry * 1.25
-                    has_tp2 = max_p >= avg_entry * 1.50
-
-                    # 🎯 실전 확정 PnL 연산 (미실현 잔량 손익 완전 제외)
+                    # 2️⃣ 매도/익절 시그널(💰, 🚨)이 없는 상태(진입/불타기/관망)에서는 누적 실전 PnL 무조건 0.0%
                     realized_pnl = 0.0
-                    remaining_qty = 1.0
+                    if "1차" in action_status:
+                        realized_pnl = round(0.35 * 25.0, 1)  # 8.8%
+                    elif "2차" in action_status:
+                        realized_pnl = round(0.35 * 25.0 + 0.35 * 50.0, 1)  # 26.2%
+                    elif "🚨" in action_status:
+                        next_open = float(after_df['Open'].iloc[0]) if len(after_df) > 0 else curr_p
+                        open_exit_ret = ((next_open - entry_p) / entry_p) * 100.0
+                        realized_pnl = round(open_exit_ret, 1)
 
-                    if has_tp1:
-                        realized_pnl += 0.35 * 25.0  # 1차 익절 35% 수량 확정
-                        remaining_qty -= 0.35
-                    if has_tp2:
-                        realized_pnl += 0.35 * 50.0  # 2차 익절 35% 수량 확정
-                        remaining_qty -= 0.35
-
-                    # 전량 매도/상투/손절 신호가 터졌을 때만 남아있는 잔량 매도 반영
-                    if "🚨" in action_status:
-                        open_exit_ret = ((next_open - avg_entry) / avg_entry) * 100.0
-                        realized_pnl += remaining_qty * open_exit_ret
-                        remaining_qty = 0.0
-
-                    cum_pnl = round(realized_pnl, 1)
+                    cum_pnl = realized_pnl
                     curr_ret = round(((curr_p - entry_p) / entry_p) * 100.0, 1)
                     max_ret = round(((max_p - entry_p) / entry_p) * 100.0, 1)
                         
@@ -5105,13 +5099,13 @@ with main_tab3:
         df_display = pd.DataFrame(history_table_data)
         df_display = df_display.sort_values(by=["종목명", "추천 포착 날짜"], ascending=[True, False])
 
-        # 💡 누적 실전 PnL 기준 요약 통계 집계
+        # 💡 [정상화] 통계 집계는 실제 현재가 손익(raw_curr_ret) 기준으로 정확히 산출
         total_hits = len(df_display)
-        win_hits = len(df_display[df_display['누적 실전 PnL (%)'] > 0])
+        win_hits = len(df_display[df_display['raw_curr_ret'] > 0])
         win_rate = (win_hits / total_hits * 100) if total_hits > 0 else 0.0
         
-        pos_rets = df_display[df_display['누적 실전 PnL (%)'] > 0]['누적 실전 PnL (%)']
-        neg_rets = df_display[df_display['누적 실전 PnL (%)'] < 0]['누적 실전 PnL (%)']
+        pos_rets = df_display[df_display['raw_curr_ret'] > 0]['raw_curr_ret']
+        neg_rets = df_display[df_display['raw_curr_ret'] < 0]['raw_curr_ret']
         total_gain = pos_rets.sum()
         total_loss = abs(neg_rets.sum())
         profit_factor = (total_gain / total_loss) if total_loss > 0 else (total_gain if total_gain > 0 else 0.0)
@@ -5135,9 +5129,27 @@ with main_tab3:
         cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "최대 파동 수익률 (%)", "추천 매매 대응", "누적 실전 PnL (%)"]
         table_df = df_display[cols_to_show]
 
+        # 💡 [눈이 편한 파스텔 톤 색상 스타일링 함수]
+        def style_pnl_colors(val):
+            if isinstance(val, (int, float)):
+                if val > 0:
+                    return 'color: #f87171; font-weight: bold;'  # 눈 안 아픈 파스텔 코랄레드 (+)
+                elif val < 0:
+                    return 'color: #60a5fa; font-weight: bold;'  # 눈 안 아픈 파스텔 소프트블루 (-)
+                return 'color: #9ca3af;'  # 0% 회색
+            elif isinstance(val, str):
+                if '(+' in val:
+                    return 'color: #f87171; font-weight: bold;'  # 현재가 내 (+)
+                elif '(-' in val:
+                    return 'color: #60a5fa; font-weight: bold;'  # 현재가 내 (-)
+            return ''
+
+        # Pandas Styler 적용
+        styled_df = table_df.style.map(style_pnl_colors)
+
         st.markdown("##### 🏆 과거 1년 포착 종목 순위표")
         st.dataframe(
-            table_df,
+            styled_df,
             use_container_width=True,
             hide_index=True,
             column_config={
