@@ -5144,54 +5144,25 @@ with main_tab3:
         </div>
         """, unsafe_allow_html=True)
 
-        # 💡 가격(흰색)과 수익률 괄호(색상)를 정밀 분리하는 HTML 표 생성
-        html_table = """
-        <style>
-            .custom-pnl-table {
-                width: 100%;
-                border-collapse: collapse;
-                font-size: 13px;
-                color: #ffffff;
-                background-color: #0f172a;
-                border-radius: 8px;
-                overflow: hidden;
-                border: 1px solid #334155;
-            }
-            .custom-pnl-table th {
-                background-color: #1e293b;
-                color: #94a3b8;
-                padding: 10px 12px;
-                border: 1px solid #334155;
-                text-align: center;
-                font-weight: bold;
-            }
-            .custom-pnl-table td {
-                padding: 10px 12px;
-                border: 1px solid #334155;
-                text-align: center;
-            }
-            .custom-pnl-table tr:hover {
-                background-color: #1e2230;
-            }
-        </style>
-        <table class="custom-pnl-table">
-            <thead>
-                <tr>
-                    <th>시장</th>
-                    <th>종목명</th>
-                    <th>추천 포착 날짜</th>
-                    <th>추천 진입가</th>
-                    <th>현재가</th>
-                    <th>최대 파동 수익률</th>
-                    <th>추천 매매 대응</th>
-                    <th>누적 실전 PnL</th>
-                </tr>
-            </thead>
-            <tbody>
-        """
+        st.markdown("##### 🏆 과거 1년 포착 종목 순위표")
 
-        for _, row in df_display.iterrows():
-            # 💡 현재가 분리 연산: 가격은 흰색, 괄호 수익률만 색상 지정
+        # 1. 표 전용 실시간 검색 입력창
+        search_keyword = st.text_input(
+            "🔍 표 내 검색", 
+            key="table_search_input", 
+            placeholder="종목명, 시장, 추천 포착 날짜, 매매 대응을 검색하세요 (예: A.O.Smith, 미국, 추세 추종)"
+        ).strip().lower()
+
+        if search_keyword:
+            filtered_df = df_display[
+                df_display.apply(lambda row: row.astype(str).str.lower().str.contains(search_keyword).any(), axis=1)
+            ]
+        else:
+            filtered_df = df_display
+
+        # 2. 데이터를 순회하며 안전한 HTML 마크업 생성
+        rows_html = ""
+        for _, row in filtered_df.iterrows():
             curr_str = str(row['현재가'])
             if ' (' in curr_str:
                 price_part, pct_part = curr_str.split(' (', 1)
@@ -5208,7 +5179,6 @@ with main_tab3:
             else:
                 curr_html = f'<span style="color: #ffffff;">{curr_str}</span>'
 
-            # 누적 실전 PnL 색상
             pnl_val = row['누적 실전 PnL (%)']
             if pnl_val > 0:
                 pnl_html = f'<span style="color: #f87171; font-weight: bold;">+{pnl_val:.1f}%</span>'
@@ -5217,26 +5187,60 @@ with main_tab3:
             else:
                 pnl_html = '<span style="color: #9ca3af;">0.0%</span>'
 
-            # 최대 파동 수익률 색상
             max_val = row['최대 파동 수익률 (%)']
             max_html = f'<span style="color: #f87171; font-weight: bold;">+{max_val:.1f}%</span>' if max_val > 0 else f'{max_val:.1f}%'
 
-            html_table += f"""
-            <tr>
-                <td>{row['시장']}</td>
-                <td style="font-weight: bold; color: #ffffff;">{row['종목명']}</td>
-                <td>{row['추천 포착 날짜']}</td>
-                <td style="color: #ffffff;">{row['추천 진입가']}</td>
-                <td>{curr_html}</td>
-                <td>{max_html}</td>
-                <td>{row['추천 매매 대응']}</td>
-                <td>{pnl_html}</td>
-            </tr>
-            """
+            rows_html += f"<tr><td>{row['시장']}</td><td style='font-weight: bold; color: #ffffff;'>{row['종목명']}</td><td>{row['추천 포착 날짜']}</td><td style='color: #ffffff;'>{row['추천 진입가']}</td><td>{curr_html}</td><td>{max_html}</td><td>{row['추천 매매 대응']}</td><td>{pnl_html}</td></tr>"
 
-        html_table += "</tbody></table>"
+        # 3. 전체 테이블 조립 및 렌더링
+        final_table_html = f"""
+        <style>
+        .custom-pnl-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            color: #ffffff;
+            background-color: #0f172a;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #334155;
+        }}
+        .custom-pnl-table th {{
+            background-color: #1e293b;
+            color: #94a3b8;
+            padding: 10px 12px;
+            border: 1px solid #334155;
+            text-align: center;
+            font-weight: bold;
+        }}
+        .custom-pnl-table td {{
+            padding: 10px 12px;
+            border: 1px solid #334155;
+            text-align: center;
+        }}
+        .custom-pnl-table tr:hover {{
+            background-color: #1e2230;
+        }}
+        </style>
+        <table class="custom-pnl-table">
+        <thead>
+        <tr>
+        <th>시장</th>
+        <th>종목명</th>
+        <th>추천 포착 날짜</th>
+        <th>추천 진입가</th>
+        <th>현재가</th>
+        <th>최대 파동 수익률</th>
+        <th>추천 매매 대응</th>
+        <th>누적 실전 PnL</th>
+        </tr>
+        </thead>
+        <tbody>
+        {rows_html}
+        </tbody>
+        </table>
+        """
 
-        st.markdown("##### 🏆 과거 1년 포착 종목 순위표")
-        st.markdown(html_table, unsafe_allow_html=True)
+        st.markdown(final_table_html, unsafe_allow_html=True)
     else:
         st.info("💡 위의 [과거 1년 추천 날짜/수익률 전체 전수 스캔] 버튼을 누르면 전체 주식의 추천 날짜와 수익률 표가 완성됩니다.")
