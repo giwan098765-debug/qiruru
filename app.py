@@ -4408,7 +4408,7 @@ def scan_all_historical_midterm_signals(assets_dict):
                     max_p = float(after_df['High'].max())
                     min_p = float(after_df['Low'].min())
                     
-                    # 💡 시그널별 매도 비중 반영 확정 수익률 & 누적 실전 PnL 정밀 연산
+                    # 💡 실제 매도 확정분만 반영하는 누적 실전 PnL 및 현재가(+%) 연산
                     df_sub = df_proc.iloc[:pos + 1]
                     action_status, rec_weight = evaluate_advanced_trade_signal(df_sub, ticker, name, c_close, entry_p, max_p, min_p)
 
@@ -4422,55 +4422,33 @@ def scan_all_historical_midterm_signals(assets_dict):
                     # 1차(+25%), 2차(+50%) 익절 달성 여부 확인
                     has_tp1 = max_p >= avg_entry * 1.25
                     has_tp2 = max_p >= avg_entry * 1.50
-                    tp1_ret = 25.0 if has_tp1 else round(((next_open - avg_entry) / avg_entry) * 100.0, 1)
-                    tp2_ret = 50.0 if has_tp2 else round(((next_open - avg_entry) / avg_entry) * 100.0, 1)
 
-                    # 🎯 매도 대응 시그널별 '당시 매도 이익 (%)' 정밀 분기
-                    if "1차" in action_status:
-                        # 1차 익절 비중(35%)에 해당하는 당차수 매도 수익률
-                        signal_sell_ret = tp1_ret
-                    elif "2차" in action_status:
-                        # 1차(35% @ +25%) + 2차(35% @ +50%) 누적 매도분(70%)의 가중평균 수익률
-                        signal_sell_ret = round((0.35 * tp1_ret + 0.35 * tp2_ret) / 0.70, 1)
-                    elif "🚨" in action_status:
-                        # 전량 매도 / 손절: 이전 익절분 + 잔량을 익일 시초가에 전량 청산한 최종 수익률
-                        sold_pnl = 0.0
-                        rem_q = 1.0
-                        if has_tp1:
-                            sold_pnl += 0.35 * tp1_ret
-                            rem_q -= 0.35
-                        if has_tp2:
-                            sold_pnl += 0.35 * tp2_ret
-                            rem_q -= 0.35
-                        
-                        open_exit_ret = ((next_open - avg_entry) / avg_entry) * 100.0
-                        sold_pnl += rem_q * open_exit_ret
-                        signal_sell_ret = round(sold_pnl, 1)
-                    else:
-                        # 매도 시그널이 아닌 경우 (신규 눌림목 / 추세 재진입 등)
-                        signal_sell_ret = 0.0
-
-                    # 전체 기간 누적 실전 PnL 계산
+                    # 🎯 실전 확정 PnL 연산 (미실현 잔량 손익 완전 제외)
                     realized_pnl = 0.0
                     remaining_qty = 1.0
+
                     if has_tp1:
-                        realized_pnl += 0.35 * 25.0
+                        realized_pnl += 0.35 * 25.0  # 1차 익절 35% 수량 확정
                         remaining_qty -= 0.35
                     if has_tp2:
-                        realized_pnl += 0.35 * 50.0
+                        realized_pnl += 0.35 * 50.0  # 2차 익절 35% 수량 확정
                         remaining_qty -= 0.35
 
-                    final_exit_price = next_open if ("🚨" in action_status) else curr_p
-                    final_ret = ((final_exit_price - avg_entry) / avg_entry) * 100.0
-                    realized_pnl += remaining_qty * final_ret
+                    # 전량 매도/상투/손절 신호가 터졌을 때만 남아있는 잔량 매도 반영
+                    if "🚨" in action_status:
+                        open_exit_ret = ((next_open - avg_entry) / avg_entry) * 100.0
+                        realized_pnl += remaining_qty * open_exit_ret
+                        remaining_qty = 0.0
 
                     cum_pnl = round(realized_pnl, 1)
                     curr_ret = round(((curr_p - entry_p) / entry_p) * 100.0, 1)
                     max_ret = round(((max_p - entry_p) / entry_p) * 100.0, 1)
                         
                     is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
+                    sign_str = "+" if curr_ret >= 0 else ""
+                    
                     fmt_entry = f"₩{entry_p:,.0f}" if is_krw else f"${entry_p:,.2f}"
-                    fmt_curr = f"₩{curr_p:,.0f}" if is_krw else f"${curr_p:,.2f}"
+                    fmt_curr = f"₩{curr_p:,.0f} ({sign_str}{curr_ret:.1f}%)" if is_krw else f"${curr_p:,.2f} ({sign_str}{curr_ret:.1f}%)"
 
                     hits.append({
                         "시장": m_label,
@@ -4480,7 +4458,6 @@ def scan_all_historical_midterm_signals(assets_dict):
                         "현재가": fmt_curr,
                         "최대 파동 수익률 (%)": max_ret,
                         "추천 매매 대응": action_status,
-                        "시그널 매도 이익 (%)": signal_sell_ret,
                         "누적 실전 PnL (%)": cum_pnl,
                         "raw_curr_ret": cum_pnl
                     })
@@ -5154,8 +5131,8 @@ with main_tab3:
         </div>
         """, unsafe_allow_html=True)
 
-        # 💡 컬럼명 '시그널 매도 이익 (%)' 반영 표 출력
-        cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "최대 파동 수익률 (%)", "추천 매매 대응", "시그널 매도 이익 (%)", "누적 실전 PnL (%)"]
+        # 💡 [시그널 매도 이익 컬럼 제거] 깔끔한 표 구성
+        cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "최대 파동 수익률 (%)", "추천 매매 대응", "누적 실전 PnL (%)"]
         table_df = df_display[cols_to_show]
 
         st.markdown("##### 🏆 과거 1년 포착 종목 순위표")
@@ -5164,8 +5141,8 @@ with main_tab3:
             use_container_width=True,
             hide_index=True,
             column_config={
-                "시그널 매도 이익 (%)": st.column_config.NumberColumn(format="%.1f%%", help="시그널에 따른 당시 매도 비중 이익률입니다."),
-                "누적 실전 PnL (%)": st.column_config.NumberColumn(format="%.1f%%", help="1~3차 분할 익절, 물타기, 손절을 모두 반영한 최종 실전 수익률입니다."),
+                "현재가": st.column_config.TextColumn(help="현재 주가 및 추천 진입가 대비 수익률입니다."),
+                "누적 실전 PnL (%)": st.column_config.NumberColumn(format="%.1f%%", help="1~2차 익절 및 손절/상투 청산으로 실제 확정된 PnL입니다. (매도 미실행 시 0.0%)"),
                 "최대 파동 수익률 (%)": st.column_config.NumberColumn(format="%.1f%%")
             }
         )
