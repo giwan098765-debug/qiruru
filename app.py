@@ -5148,51 +5148,49 @@ with main_tab3:
         </div>
         """, unsafe_allow_html=True)
 
-        # 💡 [들여쓰기 정렬] html_table 들여쓰기 오차 수정
-        html_table = """
-        <style>
-            .custom-pnl-table {
-                width: 100%;
-                border-collapse: collapse;
-                font-size: 13px;
-                color: #ffffff;
-                background-color: #0f172a;
-                border-radius: 8px;
-                overflow: hidden;
-                border: 1px solid #334155;
-            }
-            .custom-pnl-table th {
-                background-color: #1e293b;
-                color: #94a3b8;
-                padding: 10px 12px;
-                border: 1px solid #334155;
-                text-align: center;
-                font-weight: bold;
-            }
-            .custom-pnl-table td {
-                padding: 10px 12px;
-                border: 1px solid #334155;
-                text-align: center;
-            }
-            .custom-pnl-table tr:hover {
-                background-color: #1e2230;
-            }
-        </style>
-        <table class="custom-pnl-table">
-            <thead>
-                <tr>
-                    <th>시장</th>
-                    <th>종목명</th>
-                    <th>추천 포착 날짜</th>
-                    <th>추천 진입가</th>
-                    <th>현재가</th>
-                    <th>최대 파동 수익률</th>
-                    <th>추천 매매 대응</th>
-                    <th>누적 실전 PnL</th>
-                </tr>
-            </thead>
-            <tbody>
-        """
+        # 💡 HTML 내부 들여쓰기 공백을 제거하여 마크다운 코드 블록 인식 현상 방지
+        html_table = """<style>
+.custom-pnl-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    color: #ffffff;
+    background-color: #0f172a;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #334155;
+}
+.custom-pnl-table th {
+    background-color: #1e293b;
+    color: #94a3b8;
+    padding: 10px 12px;
+    border: 1px solid #334155;
+    text-align: center;
+    font-weight: bold;
+}
+.custom-pnl-table td {
+    padding: 10px 12px;
+    border: 1px solid #334155;
+    text-align: center;
+}
+.custom-pnl-table tr:hover {
+    background-color: #1e2230;
+}
+</style>
+<table class="custom-pnl-table">
+<thead>
+<tr>
+<th>시장</th>
+<th>종목명</th>
+<th>추천 포착 날짜</th>
+<th>추천 진입가</th>
+<th>현재가</th>
+<th>최대 파동 수익률</th>
+<th>추천 매매 대응</th>
+<th>누적 실전 PnL</th>
+</tr>
+</thead>
+<tbody>"""
 
         for _, row in df_display.iterrows():
             curr_str = str(row['현재가'])
@@ -5201,15 +5199,16 @@ with main_tab3:
                 pct_part = '(' + pct_part
                 
                 if '(+' in pct_part:
-                    pct_html = f'<span style="color: #f87171; font-weight: bold;">{pct_part}</span>'
+                    pct_html = f'<span style="color: #ff4b4b; font-weight: bold;">{pct_part}</span>'
                 elif '(-' in pct_part:
-                    pct_html = f'<span style="color: #60a5fa; font-weight: bold;">{pct_part}</span>'
+                    pct_html = f'<span style="color: #2563eb; font-weight: bold;">{pct_part}</span>'
                 else:
-                    pct_html = f'<span style="color: #9ca3af;">{pct_part}</span>'
+                    pct_html = f'<span style="color: #ffffff;">{pct_part}</span>'
                 
-                curr_html = f'<span style="color: #ffffff;">{price_part}</span> {pct_html}'
+                # 현재 금액(price_part)은 흰색 고정
+                curr_html = f'<span style="color: #ffffff; font-weight: bold;">{price_part}</span> {pct_html}'
             else:
-                curr_html = f'<span style="color: #ffffff;">{curr_str}</span>'
+                curr_html = f'<span style="color: #ffffff; font-weight: bold;">{curr_str}</span>'
 
             pnl_val = row['누적 실전 PnL (%)']
             if pnl_val > 0:
@@ -5222,18 +5221,7 @@ with main_tab3:
             max_val = row['최대 파동 수익률 (%)']
             max_html = f'<span style="color: #f87171; font-weight: bold;">+{max_val:.1f}%</span>' if max_val > 0 else f'{max_val:.1f}%'
 
-            html_table += f"""
-            <tr>
-                <td>{row['시장']}</td>
-                <td style="font-weight: bold; color: #ffffff;">{row['종목명']}</td>
-                <td>{row['추천 포착 날짜']}</td>
-                <td style="color: #ffffff;">{row['추천 진입가']}</td>
-                <td>{curr_html}</td>
-                <td>{max_html}</td>
-                <td>{row['추천 매매 대응']}</td>
-                <td>{pnl_html}</td>
-            </tr>
-            """
+            html_table += f"<tr><td>{row['시장']}</td><td style='font-weight: bold; color: #ffffff;'>{row['종목명']}</td><td>{row['추천 포착 날짜']}</td><td style='color: #ffffff;'>{row['추천 진입가']}</td><td>{curr_html}</td><td>{max_html}</td><td>{row['추천 매매 대응']}</td><td>{pnl_html}</td></tr>"
 
         html_table += "</tbody></table>"
 
