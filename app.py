@@ -5051,6 +5051,9 @@ with main_tab3:
     if history_table_data:
         df_display = pd.DataFrame(history_table_data)
         
+# 💡 종목명 오름차순(가나다순) 묶음 + 날짜 내림차순(최신순) 정렬
+        df_display = df_display.sort_values(by=["종목명", "추천 포착 날짜"], ascending=[True, False])
+
         # 요약 통계 집계
         total_hits = len(df_display)
         win_hits = len(df_display[df_display['현재 수익률 (%)'] > 0])
