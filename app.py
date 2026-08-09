@@ -2729,31 +2729,30 @@ def search_ticker(query):
     if not query: return None, None
     query_clean = query.strip().lower()
     
-    # 1. 미리 지정된 셋업 리스트(ASSETS)에서 먼저 매칭되는지 찾기
+    # 1. 한 글자 이상 입력 시 셋업 리스트(ASSETS) 부분 일치(contains) 검색
     for sector_name, sector_dict in ASSETS.items():
         for name, ticker in sector_dict.items():
+            if "등극주" in name or "시총" in name or "주요통화" in name: 
+                continue
             t_lower = ticker.lower()
             ticker_base = t_lower.replace('-', '.').split('.')[0]
-            if query_clean in name.lower() or query_clean == ticker_base or query_clean == t_lower:
-                if "등극주" in name or "시총" in name or "주요통화" in name: continue
+            # 이름이나 티커에 입력 키워드가 한 글자라도 포함되면 즉시 반환
+            if query_clean in name.lower() or query_clean in ticker_base or query_clean in t_lower:
                 return ticker, name
                 
-    # 2. 🌟 한글 종목명이 들어오면 국산 엔진(KRX 명부) 데이터 다이렉트 매칭
-    if contains_hangul(query):
-        try:
-            import FinanceDataReader as fdr
-            krx_df = fdr.StockListing('KRX')
-            matched = krx_df[krx_df['Name'].str.lower() == query_clean]
-            if matched.empty:
-                matched = krx_df[krx_df['Name'].str.lower().str.contains(query_clean)]
-                
-            if not matched.empty:
-                code = matched['Code'].values[0]
-                market = matched['Market'].values[0]
-                suffix = '.KQ' if 'KOSDAQ' in str(market).upper() else '.KS'
-                return f"{code}{suffix}", matched['Name'].values[0]
-        except Exception:
-            pass
+    # 2. 한국 주식 KRX 마스터 명부 한 글자 부분 일치 검색
+    try:
+        import FinanceDataReader as fdr
+        krx_df = fdr.StockListing('KRX')
+        matched = krx_df[krx_df['Name'].str.lower().str.contains(query_clean, na=False)]
+        if not matched.empty:
+            code = matched['Code'].values[0]
+            market = matched['Market'].values[0]
+            matched_name = matched['Name'].values[0]
+            suffix = '.KQ' if 'KOSDAQ' in str(market).upper() else '.KS'
+            return f"{code}{suffix}", matched_name
+    except Exception:
+        pass
 
     # 3. 매칭되는 한국 주식이 없으면 외국 주식용 기존 야후 검색 엔진 작동
     search_term = query_clean
@@ -4341,12 +4340,14 @@ def scan_all_historical_midterm_signals(assets_dict):
             
         m_label, name, ticker = task_tuple
         try:
-            # 💡 [부채비율 120% 초과 완벽 차단 - API 차단 방어 로직]
+            # 💡 대형주 누락 방지: 재무 데이터 연동 실패 시 기본 통과 처리 및 부채비율 200% 완화
             import time
             import yfinance as yf
             
-            de_pct = None
-            for _ in range(2):
+            # 삼성전자, SK하이닉스, 애플, 엔비디아 등 대표 대형주 예외 승인 목록
+            blue_chips = ["005930.KS", "000660.KS", "352820.KS", "AAPL", "NVDA", "MSFT", "TSLA", "GOOGL", "AMZN"]
+            
+            if ticker not in blue_chips:
                 try:
                     f_info = yf.Ticker(ticker).info
                     if isinstance(f_info, dict) and f_info:
@@ -4354,13 +4355,10 @@ def scan_all_historical_midterm_signals(assets_dict):
                         if de_val is not None:
                             val = float(de_val)
                             de_pct = val if val > 10.0 else val * 100.0
-                            break
+                            if de_pct > 200.0: # 안정적인 우량주 누락 방지를 위해 200%로 완화
+                                return []
                 except Exception:
-                    time.sleep(0.2)
-
-            # 부채비율 120% 초과 시 즉시 탈락
-            if de_pct is not None and de_pct > 120.0:
-                return []
+                    pass # API 조회 실패 시 대형주 탈락 방지를 위해 감수하고 통과
 
             df_hist = get_raw_daily_data(ticker)
             if df_hist is None or len(df_hist) < 200:
@@ -4423,12 +4421,13 @@ def scan_all_historical_midterm_signals(assets_dict):
                         row_h, row_l, row_c = float(row['High']), float(row['Low']), float(row['Close'])
                         row_ma200 = float(row.get('MA_200', row_c))
 
-                       # 물타기: 평단가 대비 -30% 하락 시 1:1 동일 금액 추매 (수익률 -15%로 즉시 재조정)
-                        # 이후 하향된 평단가 대비 또 -30% 하락 시 연쇄 물타기 수행
+                       # 물타기: 기존 평단가 대비 정확히 -30% 이하 타격 시에만 1:1 동일 금액 추매
+                        # 추매 후 신규 평단가는 기존 평단가의 85%(-15% 손실 상태)로 조정되며, 다음 -30% 기준점도 이 평단가 기준
                         while (row_l - avg_entry) / avg_entry <= -0.30:
-                            total_cost *= 2.0                      # 1:1 동일 금액 추가 투입 (원금 2배)
-                            avg_entry = avg_entry * (14.0 / 17.0)  # 평단가 하향 조정 (현재가 기준 수익률 -15% 형성)
-                            current_qty = total_cost / avg_entry   # 보유 수량 재산출
+                            total_cost *= 2.0                     # 1:1 동일 금액 추가 매수 (원금 2배)
+                            avg_entry = avg_entry * 0.85          # 신규 평단가 = 기존 평단가 × 0.85 (현재가 기준 -15% 손실로 재설정)
+                            current_qty = total_cost / avg_entry  # 보유 수량 업데이트
+                            action_status = f"💧 [우량주 물타기] ({hit_date_str})"
 
                         # 1차 익절 (+25% 도달 시 35% 부분 청산)
                         if (row_h - avg_entry) / avg_entry >= 0.25 and not tp1_done and current_qty > 0:
