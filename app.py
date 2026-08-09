@@ -4409,71 +4409,74 @@ def scan_all_historical_midterm_signals(assets_dict):
                     max_p = float(after_df['High'].max())
                     min_p = float(after_df['Low'].min())
 
-                    # 물타기(-30% 1:1 추매) & 1차/2차/손절/상투 실전 PnL 시뮬레이션
-                    avg_entry = entry_p
-                    total_cost = entry_p
-                    current_qty = 1.0
-                    realized_profit = 0.0
-                    tp1_done = False
-                    tp2_done = False
+                    # 7 & 8 & 9번 통합 시뮬레이션 (100만원 원금 기준 실전 평가금/손익금 & 전량매도 후 신규 눌림목 리셋)
+                        initial_seed = 1000000.0 if is_krw else 1000.0  # 100만원(해외 $1,000) 기준 원금
+                        total_invested = initial_seed
+                        avg_entry = entry_p
+                        current_qty = initial_seed / entry_p
+                        cash_balance = 0.0  # 부분 익절 등으로 회수한 현금
+                        
+                        tp1_done = False
+                        tp2_done = False
+                        is_in_position = True  # 포지션 보유 여부
+                        
+                        for _, row in after_df.iterrows():
+                            row_h, row_l, row_c = float(row['High']), float(row['Low']), float(row['Close'])
+                            row_ma200 = float(row.get('MA_200', row_c))
 
-                    for _, row in after_df.iterrows():
-                        row_h, row_l, row_c = float(row['High']), float(row['Low']), float(row['Close'])
-                        row_ma200 = float(row.get('MA_200', row_c))
+                            # 8번: 전량 매도 후 새로운 진입 타점이 나오면 '추세 재진입'이 아닌 '신규 눌림목'으로 리셋
+                            if not is_in_position:
+                                if (row_c / float(row.get('MA_20', row_c))) <= 1.08:  # 눌림목 재진입 조건 충족
+                                    avg_entry = row_c
+                                    current_qty = initial_seed / avg_entry
+                                    total_invested += initial_seed
+                                    is_in_position = True
+                                    action_status = f"🎯 [신규 눌림목] ({hit_date_str})"
+                                    continue
 
-                       # 물타기: 기존 평단가 대비 정확히 -30% 이하 타격 시에만 1:1 동일 금액 추매
-                        # 추매 후 신규 평단가는 기존 평단가의 85%(-15% 손실 상태)로 조정되며, 다음 -30% 기준점도 이 평단가 기준
-                        while (row_l - avg_entry) / avg_entry <= -0.30:
-                            total_cost *= 2.0                     # 1:1 동일 금액 추가 매수 (원금 2배)
-                            avg_entry = avg_entry * 0.85          # 신규 평단가 = 기존 평단가 × 0.85 (현재가 기준 -15% 손실로 재설정)
-                            current_qty = total_cost / avg_entry  # 보유 수량 업데이트
-                            action_status = f"💧 [우량주 물타기] ({hit_date_str})"
+                            # 물타기: 평단가 대비 -30% 이하 하락 시 1:1 동일 금액(현재 포지션 원금만큼) 추매
+                            if (row_l - avg_entry) / avg_entry <= -0.30 and is_in_position:
+                                add_capital = total_invested
+                                total_invested += add_capital
+                                avg_entry = avg_entry * 0.85  # 신규 평단가 조정 (현재가 기준 -15% 손실로 재설정)
+                                current_qty += add_capital / avg_entry
+                                action_status = f"💧 [우량주 물타기] ({hit_date_str})"
 
-                        # 1차 익절 (+25% 도달 시 35% 부분 청산)
-                        if (row_h - avg_entry) / avg_entry >= 0.25 and not tp1_done and current_qty > 0:
-                            sell_q = current_qty * 0.35
-                            realized_profit += sell_q * (row_h - avg_entry)
-                            current_qty -= sell_q
-                            tp1_done = True
+                            # 1차 익절 (+25% 도달 시 35% 부분 청산)
+                            if (row_h - avg_entry) / avg_entry >= 0.25 and not tp1_done and is_in_position:
+                                sell_q = current_qty * 0.35
+                                cash_balance += sell_q * row_h
+                                current_qty -= sell_q
+                                tp1_done = True
+                                action_status = f"💰 [1차 동적 익절] ({hit_date_str})"
 
-                        # 2차 익절 (+50% 도달 시 35% 추가 청산)
-                        if (row_h - avg_entry) / avg_entry >= 0.50 and not tp2_done and current_qty > 0:
-                            sell_q = current_qty * 0.35
-                            realized_profit += sell_q * (row_h - avg_entry)
-                            current_qty -= sell_q
-                            tp2_done = True
+                            # 2차 익절 (+50% 도달 시 35% 추가 청산)
+                            if (row_h - avg_entry) / avg_entry >= 0.50 and not tp2_done and is_in_position:
+                                sell_q = current_qty * 0.35
+                                cash_balance += sell_q * row_h
+                                current_qty -= sell_q
+                                tp2_done = True
+                                action_status = f"💰 [2차 동적 익절] ({hit_date_str})"
 
-                        # 손절 (200일선 이탈 시 잔량 전량 손절)
-                        if row_c < row_ma200 and current_qty > 0:
-                            realized_profit += current_qty * (row_c - avg_entry)
-                            current_qty = 0
-                            break
+                            # 전량 손절 (200일선 이탈 시 잔량 전량 청산)
+                            if row_c < row_ma200 and is_in_position:
+                                cash_balance += current_qty * row_c
+                                current_qty = 0.0
+                                is_in_position = False
+                                action_status = f"🚨 [상투/트레일링스탑] ({hit_date_str})"
+                                break
 
-                    # 실현 손익 + 미실현 잔량 손익 합산하여 최종 실전 PnL 산출
-                    unrealized_profit = current_qty * (curr_p - avg_entry) if current_qty > 0 else 0.0
-                    total_pnl_val = realized_profit + unrealized_profit
-                    cum_pnl = round((total_pnl_val / total_cost) * 100.0, 1)
+                        # 7번: 최종 평가금액 및 손익금액(원/$) 산출
+                        final_eval_amount = cash_balance + (current_qty * curr_p if is_in_position else 0.0)
+                        net_profit_val = final_eval_amount - total_invested
+                        cum_pnl = round((net_profit_val / total_invested) * 100.0, 1)
 
-                    # 대응 시그널 추출
-                    action_status, rec_weight = evaluate_advanced_trade_signal(df_proc, ticker, name, curr_p, avg_entry, max_p, min_p)
+                        # 포맷팅 (100만원 투자 대비 평가금액 및 순손익)
+                        if is_krw:
+                            fmt_eval = f"₩{final_eval_amount:,.0f}원 (손익: {net_profit_val:+,.0f}원)"
+                        else:
+                            fmt_eval = f"${final_eval_amount:,.2f} (손익: ${net_profit_val:+,.2f})"
 
-                    # 동일 종목 재진입 보정
-                    if name in first_entry_tracker:
-                        prev_p = first_entry_tracker[name]
-                        if "🎯 [신규 눌림목]" in action_status:
-                            action_status = action_status.replace("🎯 [신규 눌림목]", "🔥 [추세 재진입]" if curr_p >= prev_p else "💧 [우량주 물타기]")
-                    else:
-                        first_entry_tracker[name] = avg_entry
-
-                    curr_ret = round(((curr_p - avg_entry) / avg_entry) * 100.0, 1)
-                    max_ret = round(((max_p - avg_entry) / avg_entry) * 100.0, 1)
-
-                    is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
-                    sign_str = "+" if curr_ret >= 0 else ""
-                    ret_color = "#f87171" if curr_ret > 0 else ("#60a5fa" if curr_ret < 0 else "#ffffff")
-
-                    fmt_entry = f"₩{avg_entry:,.0f}" if is_krw else f"${avg_entry:,.2f}"
-                    fmt_price_val = f"₩{curr_p:,.0f}" if is_krw else f"${curr_p:,.2f}"
                     # HTML 태그 제거 (st.dataframe에서 태그 코드가 텍스트로 출력되는 오류 방지)
                     fmt_curr = f"{fmt_price_val} ({sign_str}{curr_ret:.1f}%)"
 
@@ -5132,19 +5135,20 @@ with main_tab3:
         df_display = pd.DataFrame(history_table_data)
         df_display = df_display.sort_values(by=["종목명", "추천 포착 날짜"], ascending=[True, False])
 
-        # 💡 [정상화] 통계 집계는 실제 현재가 손익(raw_curr_ret) 기준으로 정확히 산출
-        total_hits = len(df_display)
-        win_hits = len(df_display[df_display['raw_curr_ret'] > 0])
-        win_rate = (win_hits / total_hits * 100) if total_hits > 0 else 0.0
-        
-        pos_rets = df_display[df_display['raw_curr_ret'] > 0]['raw_curr_ret']
-        neg_rets = df_display[df_display['raw_curr_ret'] < 0]['raw_curr_ret']
-        total_gain = pos_rets.sum()
-        total_loss = abs(neg_rets.sum())
-        profit_factor = (total_gain / total_loss) if total_loss > 0 else (total_gain if total_gain > 0 else 0.0)
+        # 9번: 현재가, 비중, 물타기, 손절, 익절 등 모든 경우의 실질 손익금액 기준 PF 통합 연산
+            total_hits = len(df_display)
+            win_hits = len(df_display[df_display['net_profit_val'] > 0])
+            win_rate = (win_hits / total_hits * 100) if total_hits > 0 else 0.0
+            
+            # 총 실현/미실현 이익금액 및 손실금액 합산
+            gross_profit = df_display[df_display['net_profit_val'] > 0]['net_profit_val'].sum()
+            gross_loss = abs(df_display[df_display['net_profit_val'] < 0]['net_profit_val'].sum())
+            
+            # 통합 Profit Factor 도출
+            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 1.0)
 
-        max_hit_ret = df_display['최대 파동 수익률 (%)'].max()
-        pf_color = "#10b981" if profit_factor >= 2.0 else "#38bdf8"
+            max_hit_ret = df_display['최대 파동 수익률 (%)'].max()
+            pf_color = "#10b981" if profit_factor >= 2.0 else "#38bdf8"
 
         st.markdown(f"""
         <div style="background-color: #1e2230; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 15px;">
