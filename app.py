@@ -3709,7 +3709,89 @@ def evaluate_stock_signal(df_proc, ai_data):
     return full_signal, exp_win, exp_ret, c_close
 
 
+
 # ====================================================================
+# 💡 [통합 정밀 매매/비중/동적 매도 엔진] 4대 매매 상태 및 실시간 비중 제어
+# ====================================================================
+def evaluate_advanced_trade_signal(df_proc, ticker, name, c_close, entry_p, max_p, min_p):
+    """
+    최고 수익 극대화 동적 매도 + 신규 눌림목 / 추세 재진입 / 물타기(손절) 통합 판정
+    """
+    if df_proc is None or len(df_proc) < 20:
+        return "⚪ [관망]", "비중 0%"
+
+    latest = df_proc.iloc[-1]
+    prev = df_proc.iloc[-2] if len(df_proc) >= 2 else latest
+
+    # 주요 기술적 지표
+    ma5 = float(latest.get('MA_5', c_close))
+    ma20 = float(latest.get('MA_20', c_close))
+    ma200 = float(latest.get('MA_200', c_close))
+    vol_ma20 = float(latest.get('Vol_MA_20', 1.0)) if float(latest.get('Vol_MA_20', 1.0)) > 0 else 1.0
+    c_vol = float(latest.get('Volume', 0.0))
+    rvol = c_vol / vol_ma20
+
+    disp_20 = (c_close / ma20) * 100.0 if ma20 > 0 else 100.0
+    rsi_val = float(latest.get('RSI', 50.0))
+    macd_curr = float(latest.get('MACD', 0.0))
+    signal_curr = float(latest.get('Signal', 0.0))
+    macd_hist_curr = float(latest.get('MACD_Hist', 0.0))
+    macd_hist_prev = float(prev.get('MACD_Hist', 0.0))
+
+    bb_upper = float(latest.get('BB_Upper', c_close * 1.2))
+    bb_lower = float(latest.get('BB_Lower', c_close * 0.8))
+    bb_range = bb_upper - bb_lower
+    pct_b = (c_close - bb_lower) / bb_range if bb_range > 0 else 0.5
+
+    # 수익률 및 고점 대비 하락률
+    curr_ret = ((c_close - entry_p) / entry_p) * 100.0 if entry_p > 0 else 0.0
+    drop_from_peak = ((max_p - c_close) / max_p) * 100.0 if max_p > 0 else 0.0
+
+    # 4대 최고점(Peak) 피크 신호 감지
+    peak_signals = 0
+    if rvol >= 2.5 and c_close < float(latest.get('Open', c_close)): peak_signals += 1  # 1. 거래량 클라이맥스 후 음봉
+    if disp_20 >= 118.0 or pct_b >= 0.92: peak_signals += 1                             # 2. 이격도 과열 & 볼밴 오버슈팅
+    if rsi_val >= 72.0 and macd_hist_curr < macd_hist_prev: peak_signals += 1          # 3. RSI/MACD 다이버전스
+    if c_close < ma5 and float(prev.get('Close', c_close)) >= float(prev.get('MA_5', c_close)): peak_signals += 1  # 4. 단기 추세선 이탈
+
+    # 💡 3개월(60D) 주도주 동적 판정
+    c_60b = float(df_proc['Close'].iloc[-60]) if len(df_proc) >= 60 else float(df_proc['Close'].iloc[0])
+    ret_3m = ((c_close - c_60b) / c_60b) * 100.0 if c_60b > 0 else 0.0
+    is_leading = (ret_3m >= 10.0) and (c_close >= ma200) and (ma20 >= ma200)
+
+    # 1️⃣ [동적 매도 / 트레일링 스탑] (수익 극대화 청산)
+    if curr_ret >= 20.0:
+        # 고점 대비 -10% 이상 밀리거나 4대 피크 신호 2개 이상 동시 출현 시 상투 청산
+        if drop_from_peak >= 10.0 or peak_signals >= 2:
+            return "🚨 [상투/트레일링스탑]", "전량 매도 (수익 최종 확정)"
+        if curr_ret >= 50.0 or (curr_ret >= 40.0 and peak_signals >= 1):
+            return "💰 [2차 동적 익절]", "보유 수량 30~40% 매도"
+        if curr_ret >= 25.0 and (rsi_val >= 68.0 or pct_b >= 0.85):
+            return "💰 [1차 동적 익절]", "보유 수량 30~40% 매도 (원금 회수)"
+
+    # 2️⃣ [물타기 / 리스크 손절 판정] (진입가 대비 손실 중)
+    if curr_ret < 0:
+        if c_close < ma200 or (macd_curr < signal_curr and macd_hist_curr <= 0):
+            if curr_ret <= -15.0:
+                return "🚨 [추세 훼손/손절]", "전량 손절 매도 (추세 이탈)"
+            else:
+                return "⚠️ [리스크 관리]", "50% 비중 축소 (추세 약화)"
+        if -30.0 <= curr_ret <= -15.0:
+            return "💧 [우량주 물타기]", "기존 투자금 100% 동일금액 추가 매수"
+        return "🔵 [단기 눌림 관망]", "추가 매수 대기 (20일선 안착 확인)"
+
+    # 3️⃣ [추세 재진입 / 불타기 판정] (수익 중 + 대시세 연장)
+    if curr_ret > 0 and (108.0 < disp_20 <= 112.0 or 60.0 < rsi_val <= 68.0) and macd_curr >= signal_curr:
+        return "🔥 [추세 재진입]", "기존 투자금의 +30%~+50% 추가 적립"
+
+    # 4️⃣ [신규 눌림목 진입 판정] (안전한 최초 진입 타점)
+    if disp_20 <= 108.0 and rsi_val <= 60.0 and macd_curr >= signal_curr:
+        weight_str = "포트폴리오 비중 12~15% (3M 주도 섹터)" if is_leading else "포트폴리오 비중 8~10%"
+        return "🎯 [신규 눌림목]", weight_str
+
+    return "🟢 [보유/추세 추종]", "잔량 홀딩"
+
+    # ====================================================================
 # 🚀 [1~5봉 내 10%+ 초급등주(Surge Stock) 전용 정밀 스캐너 Engine]
 # ====================================================================
 def evaluate_surge_stock_signal(df_proc, ai_data):
@@ -3866,21 +3948,26 @@ def run_midterm_quant_eval(df_sub, name, ticker, fin_info=None):
     if df_sub is None or len(df_sub) < 150:
         return None
 
-    # 1. 펀더멘털 스크리닝 (시총 8천억 이상 / 부채비율 200% 이하)
+    # 1. 펀더멘털 스크리닝 (시총 8천억 이상 / 부채비율 120% 이하)
     try:
         if fin_info is None:
             import yfinance as yf
             fin_info = yf.Ticker(ticker).info
             
         if isinstance(fin_info, dict):
+            # 시가총액 (국내 8천억 이상)
             if ".KS" in ticker or ".KQ" in ticker:
                 mcap = fin_info.get('marketCap', 0)
                 if mcap and mcap < 800_000_000_000:
                     return None
             
-            debt_to_equity = fin_info.get('debtToEquity', 0)
-            if debt_to_equity and debt_to_equity > 200:
-                return None
+            # 💡 [요청 반영] 부채비율(Debt to Equity) 120% 이하만 엄격 승인
+            debt_to_equity = fin_info.get('debtToEquity', None)
+            if debt_to_equity is not None:
+                d_e_val = float(debt_to_equity)
+                # yfinance 수치 규격 대응 (120% 표기 방식: 120.0 또는 1.2)
+                if d_e_val > 120.0 or (1.2 < d_e_val <= 100.0):
+                    return None
     except Exception:
         pass
 
@@ -3959,6 +4046,9 @@ def run_midterm_quant_eval(df_sub, name, ticker, fin_info=None):
     if up_prob < 85.0:
         return None
 
+    # 💡 실시간 매매 대응 및 비중 연산
+    action_status, rec_weight = evaluate_advanced_trade_signal(df_sub, ticker, name, c_close, calc_entry, c_close, c_close)
+
     return {
         "name": name,
         "ticker": ticker,
@@ -3969,7 +4059,9 @@ def run_midterm_quant_eval(df_sub, name, ticker, fin_info=None):
         "upside": 100.0,
         "exp_ret": 100.0,
         "composite_score": round(score, 2),
-        "signal": "🎯 [눌림목/추세우상향] 20일선 지지 + MACD양호 + OBV매집",
+        "signal": action_status,
+        "action_status": action_status,
+        "rec_weight": rec_weight,
         "score": round(score, 2),
         "adx": 25.0
     }
@@ -4242,6 +4334,28 @@ def scan_all_historical_midterm_signals(assets_dict):
             
         m_label, name, ticker = task_tuple
         try:
+
+# 💡 [부채비율 120% 초과 완벽 차단 - API 차단 방어 로직]
+            import time
+            import yfinance as yf
+            
+            de_pct = None
+            for _ in range(2):
+                try:
+                    f_info = yf.Ticker(ticker).info
+                    if isinstance(f_info, dict) and f_info:
+                        de_val = f_info.get('debtToEquity', None)
+                        if de_val is not None:
+                            val = float(de_val)
+                            de_pct = val if val > 10.0 else val * 100.0
+                            break
+                except Exception:
+                    time.sleep(0.2)
+
+            # 부채비율 120% 초과 시 즉시 탈락
+            if de_pct is not None and de_pct > 120.0:
+                return []
+
             df_hist = get_raw_daily_data(ticker)
             if df_hist is None or len(df_hist) < 200:
                 return []
@@ -4263,23 +4377,21 @@ def scan_all_historical_midterm_signals(assets_dict):
                 prev = df_proc.iloc[pos - 1] if pos > 0 else latest
                 c_close = float(latest['Close'])
 
-                # 🚨 [필터 1] MACD 데드크로스 & 음수 차단 (유지)
+                # 🚨 [개선 1] MACD 단순 데드크로스만 차단 (MACD > Signal 유지 시 재진입 허용)
                 macd_curr = float(latest.get('MACD', 0))
                 signal_curr = float(latest.get('Signal', 0))
-                macd_hist_curr = float(latest.get('MACD_Hist', 0))
-                macd_hist_prev = float(prev.get('MACD_Hist', 0))
-                if macd_curr < signal_curr or macd_hist_curr <= 0 or macd_hist_curr < macd_hist_prev:
+                if macd_curr < signal_curr:
                     continue
 
-                # 🎯 [필터 2] 일봉 20일선 이격도 (95% ~ 108%)
+                # 🎯 [개선 2] 일봉 20일선 이격도 완화 (93% ~ 112% : 강한 추세주 눌림목 포착)
                 ma20 = float(latest.get('MA_20', c_close))
                 disp_20 = (c_close / ma20) * 100.0 if ma20 > 0 else 100.0
-                if not (95.0 <= disp_20 <= 108.0):
+                if not (93.0 <= disp_20 <= 112.0):
                     continue
 
-                # 🎯 [필터 3] RSI 식힘 구간 (38 ~ 60)
+                # 🎯 [개선 3] RSI 기준 완화 (38 ~ 68 : 대시세 우상향 종목 재진입 허용)
                 rsi_val = float(latest.get('RSI', 50))
-                if not (38.0 <= rsi_val <= 60.0):
+                if not (38.0 <= rsi_val <= 68.0):
                     continue
 
                 last_hit_bar = pos
@@ -4293,15 +4405,11 @@ def scan_all_historical_midterm_signals(assets_dict):
                     max_p = float(after_df['High'].max())
                     min_p = float(after_df['Low'].min())
                     
-                    if min_p <= entry_p * 0.70:
-                        dca_entry_p = (entry_p + (entry_p * 0.70)) / 2.0
-                        curr_ret = round(((curr_p - dca_entry_p) / dca_entry_p) * 100.0, 1)
-                        max_ret = round(((max_p - dca_entry_p) / dca_entry_p) * 100.0, 1)
-                        status = "💧 -30% 물타기 실행 (평단 하향)"
-                    else:
-                        curr_ret = round(((curr_p - entry_p) / entry_p) * 100.0, 1)
-                        max_ret = round(((max_p - entry_p) / entry_p) * 100.0, 1)
-                        status = "🔥 대파동 (+100%+)" if max_ret >= 100.0 else ("🟢 보유/수익중" if curr_ret > 0 else "🔵 눌림 진행중")
+                    # 💡 최신 지표 기반 매매 대응 및 추천 비중 연산
+                    action_status, rec_weight = evaluate_advanced_trade_signal(df_proc, ticker, name, curr_p, entry_p, max_p, min_p)
+
+                    curr_ret = round(((curr_p - entry_p) / entry_p) * 100.0, 1)
+                    max_ret = round(((max_p - entry_p) / entry_p) * 100.0, 1)
                         
                     is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
                     fmt_entry = f"₩{entry_p:,.0f}" if is_krw else f"${entry_p:,.2f}"
@@ -4311,14 +4419,14 @@ def scan_all_historical_midterm_signals(assets_dict):
                     hits.append({
                         "시장": m_label,
                         "종목명": name,
-                        "티커": ticker,
                         "추천 포착 날짜": hit_date_str,
                         "추천 진입가": fmt_entry,
                         "현재가": fmt_curr,
                         "기간 최고가": fmt_max,
                         "현재 수익률 (%)": curr_ret,
                         "최대 파동 수익률 (%)": max_ret,
-                        "상태": status,
+                        "추천 매매 대응": action_status,
+                        "추천 비중": rec_weight,
                         "raw_curr_ret": curr_ret
                     })
             return hits
@@ -4425,7 +4533,7 @@ with main_tab2:
         # ====================================================================
         # 🎯 [1번 탭 UI] 90% 승률 정예 Top 3 표출 및 스마트 진입가 표기
         # ====================================================================
-        def render_unified_top10(market_title, key_name):
+        def render_midterm_top10(market_title, key_name):
             raw_results = st.session_state.get(key_name, [])
             
             # 승률 85% 이상 & 예상수익 플러스 종목만 엄선
@@ -4447,6 +4555,10 @@ with main_tab2:
                 upside_val = res.get('upside', 0.0)
                 entry_p = res.get('entry_price', 0.0)
                 
+                # 💡 신규 매매 대응 상태 및 추천 비중 바인딩
+                action_status = res.get('action_status', '🎯 [신규 눌림목]')
+                rec_weight = res.get('rec_weight', '포트폴리오 비중 8~10%')
+                
                 upside_color = "#ff4b4b" if upside_val > 0 else "#38bdf8"
                 upside_html = f"+{upside_val:.1f}%" if upside_val > 0 else f"{upside_val:.1f}%"
                 
@@ -4466,8 +4578,11 @@ with main_tab2:
                     <div style="font-size: 15px; font-weight: bold; color: #ffffff; margin-bottom: 6px;">
                         🏆 {rank}위. {res['name']} <span style="font-size: 12px; color: #64748b; font-weight: normal;">({res['ticker']})</span>
                     </div>
-                    <div style="font-size: 13px; color: #ffd700; font-weight: bold; margin-bottom: 6px;">
+                    <div style="font-size: 13px; color: #ffd700; font-weight: bold; margin-bottom: 4px;">
                         🎯 지정가 추천 진입가: <span style="color: #ffffff;">{fmt_entry}</span>
+                    </div>
+                    <div style="font-size: 12px; color: #10b981; font-weight: bold; margin-bottom: 6px;">
+                        💡 대응 및 비중: <span style="color: #ffffff;">{action_status}</span> <span style="color: #94a3b8;">({rec_weight})</span>
                     </div>
                     <hr style="border:0; border-top:1px solid #334155; margin: 6px 0;">
                     <div style="font-size: 13px; color: #e2e8f0; margin-bottom: 6px;">
@@ -4485,7 +4600,7 @@ with main_tab2:
         us_res = st.session_state.get('scan_midterm_us', [])
 
         if kr_res or us_res:
-            c1, c2 = st.columns(2) # 👈 2개 컬럼으로 교체
+            c1, c2 = st.columns(2)
             with c1: render_midterm_top10("🇰🇷 국내 증시", 'scan_midterm_kr')
             with c2: render_midterm_top10("🇺🇸 미국 증시", 'scan_midterm_us')
         else:
@@ -4959,17 +5074,17 @@ with main_tab3:
             <div style="display: flex; justify-content: space-around; text-align: center;">
                 <div><span style="font-size: 11px; color: #94a3b8;">포착 건수</span><br><b style="font-size: 15px; color: #ffffff;">{total_hits}건</b></div>
                 <div><span style="font-size: 11px; color: #94a3b8;">승률</span><br><b style="font-size: 15px; color: #10b981;">{win_rate:.1f}%</b></div>
-                <div><span style="font-size: 11px; color: #94a3b8;">손익비 (PF)</span><br><b style="font-size: 15px; color: {pf_color};">{profit_factor:.2f} (목표: 2.0↑)</b></div>
+                <div><span style="font-size: 11px; color: #94a3b8;">손익비 (PF)</span><br><b style="font-size: 15px; color: {pf_color};">{profit_factor:.2f}</b></div>
                 <div><span style="font-size: 11px; color: #94a3b8;">최고 수익 파동</span><br><b style="font-size: 15px; color: #ff4b4b;">+{max_hit_ret:.1f}%</b></div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # 표 출력용 컬럼 정리
-        cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "현재 수익률 (%)", "최대 파동 수익률 (%)", "상태"]
-        table_df = df_display[cols_to_show]
-
         st.markdown("##### 🏆 과거 1년 포착 종목 순위표 (수익률 내림차순)")
+
+# 표 출력용 컬럼 정리
+        cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "현재 수익률 (%)", "최대 파동 수익률 (%)", "추천 매매 대응", "추천 비중"]
+        table_df = df_display[cols_to_show]
         
         # 데이터프레임 표 출력
         st.dataframe(
