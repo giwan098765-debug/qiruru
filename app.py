@@ -3723,8 +3723,9 @@ def evaluate_advanced_trade_signal(df_proc, ticker, name, c_close, entry_p, max_
     latest = df_proc.iloc[-1]
     prev = df_proc.iloc[-2] if len(df_proc) >= 2 else latest
 
-    # 💡 신호 생성 기준 날짜 추출 (YY-MM-DD 포맷)
-    latest_date_str = pd.to_datetime(latest.get('Date', pd.Timestamp.now())).strftime('%y-%m-%d')
+    # 💡 해당 차트 위치(pos)의 실제 날짜 추출 (YY-MM-DD 포맷)
+    raw_date = latest.get('Date', pd.Timestamp.now())
+    latest_date_str = pd.to_datetime(raw_date).strftime('%y-%m-%d')
 
     # 주요 기술적 지표
     ma5 = float(latest.get('MA_5', c_close))
@@ -4407,16 +4408,69 @@ def scan_all_historical_midterm_signals(assets_dict):
                     max_p = float(after_df['High'].max())
                     min_p = float(after_df['Low'].min())
                     
-                    # 💡 최신 지표 기반 매매 대응 및 추천 비중 연산
-                    action_status, rec_weight = evaluate_advanced_trade_signal(df_proc, ticker, name, curr_p, entry_p, max_p, min_p)
+                    # 💡 시그널별 매도 비중 반영 확정 수익률 & 누적 실전 PnL 정밀 연산
+                    df_sub = df_proc.iloc[:pos + 1]
+                    action_status, rec_weight = evaluate_advanced_trade_signal(df_sub, ticker, name, c_close, entry_p, max_p, min_p)
 
+                    next_open = float(after_df['Open'].iloc[0]) if len(after_df) > 0 else curr_p
+
+                    # 물타기 실행 여부 반영 (-15% 이하 시 동일금액 추매 ➔ 평단가 하향)
+                    avg_entry = entry_p
+                    if min_p <= entry_p * 0.85:
+                        avg_entry = (entry_p + (entry_p * 0.85)) / 2.0
+
+                    # 1차(+25%), 2차(+50%) 익절 달성 여부 확인
+                    has_tp1 = max_p >= avg_entry * 1.25
+                    has_tp2 = max_p >= avg_entry * 1.50
+                    tp1_ret = 25.0 if has_tp1 else round(((next_open - avg_entry) / avg_entry) * 100.0, 1)
+                    tp2_ret = 50.0 if has_tp2 else round(((next_open - avg_entry) / avg_entry) * 100.0, 1)
+
+                    # 🎯 매도 대응 시그널별 '당시 매도 이익 (%)' 정밀 분기
+                    if "1차" in action_status:
+                        # 1차 익절 비중(35%)에 해당하는 당차수 매도 수익률
+                        signal_sell_ret = tp1_ret
+                    elif "2차" in action_status:
+                        # 1차(35% @ +25%) + 2차(35% @ +50%) 누적 매도분(70%)의 가중평균 수익률
+                        signal_sell_ret = round((0.35 * tp1_ret + 0.35 * tp2_ret) / 0.70, 1)
+                    elif "🚨" in action_status:
+                        # 전량 매도 / 손절: 이전 익절분 + 잔량을 익일 시초가에 전량 청산한 최종 수익률
+                        sold_pnl = 0.0
+                        rem_q = 1.0
+                        if has_tp1:
+                            sold_pnl += 0.35 * tp1_ret
+                            rem_q -= 0.35
+                        if has_tp2:
+                            sold_pnl += 0.35 * tp2_ret
+                            rem_q -= 0.35
+                        
+                        open_exit_ret = ((next_open - avg_entry) / avg_entry) * 100.0
+                        sold_pnl += rem_q * open_exit_ret
+                        signal_sell_ret = round(sold_pnl, 1)
+                    else:
+                        # 매도 시그널이 아닌 경우 (신규 눌림목 / 추세 재진입 등)
+                        signal_sell_ret = 0.0
+
+                    # 전체 기간 누적 실전 PnL 계산
+                    realized_pnl = 0.0
+                    remaining_qty = 1.0
+                    if has_tp1:
+                        realized_pnl += 0.35 * 25.0
+                        remaining_qty -= 0.35
+                    if has_tp2:
+                        realized_pnl += 0.35 * 50.0
+                        remaining_qty -= 0.35
+
+                    final_exit_price = next_open if ("🚨" in action_status) else curr_p
+                    final_ret = ((final_exit_price - avg_entry) / avg_entry) * 100.0
+                    realized_pnl += remaining_qty * final_ret
+
+                    cum_pnl = round(realized_pnl, 1)
                     curr_ret = round(((curr_p - entry_p) / entry_p) * 100.0, 1)
                     max_ret = round(((max_p - entry_p) / entry_p) * 100.0, 1)
                         
                     is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
                     fmt_entry = f"₩{entry_p:,.0f}" if is_krw else f"${entry_p:,.2f}"
                     fmt_curr = f"₩{curr_p:,.0f}" if is_krw else f"${curr_p:,.2f}"
-                    fmt_max = f"₩{max_p:,.0f}" if is_krw else f"${max_p:,.2f}"
 
                     hits.append({
                         "시장": m_label,
@@ -4424,12 +4478,11 @@ def scan_all_historical_midterm_signals(assets_dict):
                         "추천 포착 날짜": hit_date_str,
                         "추천 진입가": fmt_entry,
                         "현재가": fmt_curr,
-                        "기간 최고가": fmt_max,
-                        "현재 수익률 (%)": curr_ret,
                         "최대 파동 수익률 (%)": max_ret,
                         "추천 매매 대응": action_status,
-                        "추천 비중": rec_weight,
-                        "raw_curr_ret": curr_ret
+                        "시그널 매도 이익 (%)": signal_sell_ret,
+                        "누적 실전 PnL (%)": cum_pnl,
+                        "raw_curr_ret": cum_pnl
                     })
             return hits
         except Exception:
@@ -5026,17 +5079,38 @@ with main_tab2:
 # 3️⃣ 메인 탭 3: 6M~1Y 중장기 저점 유망주 과거 1년 전수 스캐너
 # --------------------------------------------------------------------
 with main_tab3:
-    st.markdown("### 🚀 6개월~1년 중장기 정예 유망주 관제탑")
+    col_hdr1, col_hdr2 = st.columns([1.1, 0.9])
     
-    st.markdown("""
-    <div style="background-color: #0f172a; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; margin: 10px 0 15px 0; font-size: 13px; line-height: 1.6;">
-        <div style="font-weight: bold; color: #10b981; margin-bottom: 6px;">💡 6M~1Y 중장기 +100% 목표 초엄격 스캐닝 시스템</div>
-        <div style="color: #e2e8f0;">
-            • <b>스캐닝 스펙:</b> 시총 8천억↑ / S&P500 + 주봉 20주/50주선 정배열 + 일봉 20일선 눌림목 + OBV 세력 매집.<br>
-            • <b>중장기 대응 전략:</b> -30% 도달 시 1:1 동일 금액 물타기(평단 -15% 하향) / <b>+30%(1차) ➔ +60%(2차) ➔ +100%+(트레일링)</b>.
+    with col_hdr1:
+        st.markdown("### 🚀 6개월~1년 중장기 정예 유망주 관제탑")
+        st.markdown("""
+        <div style="background-color: #0f172a; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; font-size: 13px; line-height: 1.6;">
+            <div style="font-weight: bold; color: #10b981; margin-bottom: 6px;">💡 6M~1Y 중장기 +100% 목표 초엄격 스캐닝 시스템</div>
+            <div style="color: #e2e8f0;">
+                • <b>스캐닝 스펙:</b> 시총 8천억↑ / S&P500 + 주봉 20주/50주선 정배열 + 일봉 20일선 눌림목 + OBV 세력 매집.<br>
+                • <b>중장기 대응 전략:</b> -30% 도달 시 1:1 동일 금액 물타기(평단 -15% 하향) / <b>+30%(1차) ➔ +60%(2차) ➔ +100%+(트레일링)</b>.
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
+
+    with col_hdr2:
+        st.markdown("""
+        <div style="background-color: #1e1b2e; border: 2px solid #ef4444; padding: 12px 16px; border-radius: 8px; font-size: 12.5px; height: 100%;">
+            <div style="color: #fca5a5; font-weight: bold; font-size: 14px; margin-bottom: 6px;">
+                📌 추천 매매 대응 행동 및 비중 가이드
+            </div>
+            <div style="color: #e2e8f0; line-height: 1.65;">
+                • <b>🎯 [신규 눌림목]</b>: 최초 진입 (주도주 12~15% / 일반 8~10%)<br>
+                • <b>🔥 [추세 재진입]</b>: 보유자 불타기 (원금의 +30~50% 추가 적립)<br>
+                • <b>💧 [우량주 물타기]</b>: -15~-30% 조정 시 1:1 동일금액 추매 (평단 하향)<br>
+                • <b>⚠️ [리스크관리/손절]</b>: 200일선 이탈 시 50% 축소 또는 전량 손절<br>
+                • <b>💰 [1/2차 동적 익절]</b>: +25%/+50% 도달 시 30~40% 부분 청산<br>
+                • <b>🚨 [상투/트레일링스탑]</b>: <b>익일 시초가 즉시 전량 매도</b> (수익 최종 확정)
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # ----------------------------------------------------------------
     # 과거 1년 전체 종목 추천 날짜 & 수익률 전수 조사
@@ -5052,64 +5126,48 @@ with main_tab3:
 
     if history_table_data:
         df_display = pd.DataFrame(history_table_data)
-        
-# 💡 종목명 오름차순(가나다순) 묶음 + 날짜 내림차순(최신순) 정렬
         df_display = df_display.sort_values(by=["종목명", "추천 포착 날짜"], ascending=[True, False])
 
-        # 요약 통계 집계
+        # 💡 누적 실전 PnL 기준 요약 통계 집계
         total_hits = len(df_display)
-        win_hits = len(df_display[df_display['현재 수익률 (%)'] > 0])
+        win_hits = len(df_display[df_display['누적 실전 PnL (%)'] > 0])
         win_rate = (win_hits / total_hits * 100) if total_hits > 0 else 0.0
         
-        # 💡 프로핏 팩터 (Profit Factor / 손익비): 2.0 이상 시 매우 우수한 전략
-        pos_rets = df_display[df_display['현재 수익률 (%)'] > 0]['현재 수익률 (%)']
-        neg_rets = df_display[df_display['현재 수익률 (%)'] < 0]['현재 수익률 (%)']
+        pos_rets = df_display[df_display['누적 실전 PnL (%)'] > 0]['누적 실전 PnL (%)']
+        neg_rets = df_display[df_display['누적 실전 PnL (%)'] < 0]['누적 실전 PnL (%)']
         total_gain = pos_rets.sum()
         total_loss = abs(neg_rets.sum())
         profit_factor = (total_gain / total_loss) if total_loss > 0 else (total_gain if total_gain > 0 else 0.0)
 
         max_hit_ret = df_display['최대 파동 수익률 (%)'].max()
-
-        # 프로핏 팩터 2.0 이상이면 초록색, 미만이면 파란색 표시
         pf_color = "#10b981" if profit_factor >= 2.0 else "#38bdf8"
 
         st.markdown(f"""
         <div style="background-color: #1e2230; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 15px;">
-            <div style="font-size: 13px; color: #ffffff; font-weight: bold; margin-bottom: 6px;">📊 과거 1년 전수 포착 성과 종합 보고서</div>
+            <div style="font-size: 13px; color: #ffffff; font-weight: bold; margin-bottom: 6px;">📊 과거 1년 실전 분할 매도 적용 성과 보고서</div>
             <div style="display: flex; justify-content: space-around; text-align: center;">
-                <div><span style="font-size: 11px; color: #94a3b8;">포착 건수</span><br><b style="font-size: 15px; color: #ffffff;">{total_hits}건</b></div>
-                <div><span style="font-size: 11px; color: #94a3b8;">승률</span><br><b style="font-size: 15px; color: #10b981;">{win_rate:.1f}%</b></div>
-                <div><span style="font-size: 11px; color: #94a3b8;">손익비 (PF)</span><br><b style="font-size: 15px; color: {pf_color};">{profit_factor:.2f}</b></div>
+                <div><span style="font-size: 11px; color: #94a3b8;">총 포착 건수</span><br><b style="font-size: 15px; color: #ffffff;">{total_hits}건</b></div>
+                <div><span style="font-size: 11px; color: #94a3b8;">실전 승률</span><br><b style="font-size: 15px; color: #10b981;">{win_rate:.1f}%</b></div>
+                <div><span style="font-size: 11px; color: #94a3b8;">Profit Factor (PF)</span><br><b style="font-size: 15px; color: {pf_color};">{profit_factor:.2f}</b></div>
                 <div><span style="font-size: 11px; color: #94a3b8;">최고 수익 파동</span><br><b style="font-size: 15px; color: #ff4b4b;">+{max_hit_ret:.1f}%</b></div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("##### 🏆 과거 1년 포착 종목 순위표 (수익률 내림차순)")
-
-# 표 출력용 컬럼 정리
-        cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "현재 수익률 (%)", "최대 파동 수익률 (%)", "추천 매매 대응", "추천 비중"]
+        # 💡 컬럼명 '시그널 매도 이익 (%)' 반영 표 출력
+        cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "최대 파동 수익률 (%)", "추천 매매 대응", "시그널 매도 이익 (%)", "누적 실전 PnL (%)"]
         table_df = df_display[cols_to_show]
-        
-        # 데이터프레임 표 출력
+
+        st.markdown("##### 🏆 과거 1년 포착 종목 순위표")
         st.dataframe(
             table_df,
             use_container_width=True,
             hide_index=True,
             column_config={
-                "현재 수익률 (%)": st.column_config.NumberColumn(format="%.1f%%"),
-                "최대 파동 수익률 (%)": st.column_config.NumberColumn(format="%.1f%%"),
-                "추천 포착 날짜": st.column_config.TextColumn(help="알고리즘 조건이 만족하여 최초 추천 포착된 날짜입니다.")
+                "시그널 매도 이익 (%)": st.column_config.NumberColumn(format="%.1f%%", help="시그널에 따른 당시 매도 비중 이익률입니다."),
+                "누적 실전 PnL (%)": st.column_config.NumberColumn(format="%.1f%%", help="1~3차 분할 익절, 물타기, 손절을 모두 반영한 최종 실전 수익률입니다."),
+                "최대 파동 수익률 (%)": st.column_config.NumberColumn(format="%.1f%%")
             }
         )
-
-        # 특정 추천 날짜 필터링 드롭다운
-        unique_hit_dates = sorted(list(set(df_display['추천 포착 날짜'])), reverse=True)
-        selected_date_filter = st.selectbox("📅 특정 추천 날짜만 골라서 확인하기", ["전체 보기"] + unique_hit_dates, key="sb_filter_hit_date")
-        
-        if selected_date_filter != "전체 보기":
-            filtered_df = table_df[table_df['추천 포착 날짜'] == selected_date_filter]
-            st.markdown(f"🗓️ **{selected_date_filter} 포착 종목 리스트:**")
-            st.dataframe(filtered_df, use_container_width=True, hide_index=True)
     else:
         st.info("💡 위의 [과거 1년 추천 날짜/수익률 전체 전수 스캔] 버튼을 누르면 전체 주식의 추천 날짜와 수익률 표가 완성됩니다.")
