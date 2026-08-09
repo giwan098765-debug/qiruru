@@ -4410,7 +4410,11 @@ def scan_all_historical_midterm_signals(assets_dict):
                     min_p = float(after_df['Low'].min())
 
                     # 7 & 8 & 9번 통합 시뮬레이션 (100만원 원금 기준 실전 평가금/손익금 & 전량매도 후 신규 눌림목 리셋)
-                        initial_seed = 1000000.0 if is_krw else 1000.0  # 100만원(해외 $1,000) 기준 원금
+
+ # 아래 위치에 정확히 들여쓰기를 맞춰 넣어주세요.
+    initial_seed = 1000000.0 if is_krw else 1000.0 
+
+# 100만원(해외 $1,000) 기준 원금
                         total_invested = initial_seed
                         avg_entry = entry_p
                         current_qty = initial_seed / entry_p
