@@ -4331,14 +4331,16 @@ def scan_all_historical_midterm_signals(assets_dict):
     historical_hits = []
     processed = 0
 
+    # 💡 종목별 최초 진입 여부 추적용 딕셔너리 선언
+    first_entry_tracker = {}
+
     def stock_history_task(task_tuple, ctx_obj):
         if ctx_obj is not None:
             add_script_run_ctx(ctx=ctx_obj)
             
         m_label, name, ticker = task_tuple
         try:
-
-# 💡 [부채비율 120% 초과 완벽 차단 - API 차단 방어 로직]
+            # 💡 [부채비율 120% 초과 완벽 차단 - API 차단 방어 로직]
             import time
             import yfinance as yf
             
@@ -4380,19 +4382,19 @@ def scan_all_historical_midterm_signals(assets_dict):
                 prev = df_proc.iloc[pos - 1] if pos > 0 else latest
                 c_close = float(latest['Close'])
 
-                # 🚨 [개선 1] MACD 단순 데드크로스만 차단 (MACD > Signal 유지 시 재진입 허용)
+                # 🚨 [개선 1] MACD 단순 데드크로스만 차단
                 macd_curr = float(latest.get('MACD', 0))
                 signal_curr = float(latest.get('Signal', 0))
                 if macd_curr < signal_curr:
                     continue
 
-                # 🎯 [개선 2] 일봉 20일선 이격도 완화 (93% ~ 112% : 강한 추세주 눌림목 포착)
+                # 🎯 [개선 2] 일봉 20일선 이격도 완화
                 ma20 = float(latest.get('MA_20', c_close))
                 disp_20 = (c_close / ma20) * 100.0 if ma20 > 0 else 100.0
                 if not (93.0 <= disp_20 <= 112.0):
                     continue
 
-                # 🎯 [개선 3] RSI 기준 완화 (38 ~ 68 : 대시세 우상향 종목 재진입 허용)
+                # 🎯 [개선 3] RSI 기준 완화
                 rsi_val = float(latest.get('RSI', 50))
                 if not (38.0 <= rsi_val <= 68.0):
                     continue
@@ -4423,12 +4425,12 @@ def scan_all_historical_midterm_signals(assets_dict):
                     else:
                         first_entry_tracker[name] = entry_p
 
-                    # 2️⃣ 매도/익절 시그널(💰, 🚨)이 없는 상태(진입/불타기/관망)에서는 누적 실전 PnL 무조건 0.0%
+                    # 2️⃣ 매도/익절 시그널(💰, 🚨)이 없는 상태에서는 누적 실전 PnL 무조건 0.0%
                     realized_pnl = 0.0
                     if "1차" in action_status:
-                        realized_pnl = round(0.35 * 25.0, 1)  # 8.8%
+                        realized_pnl = round(0.35 * 25.0, 1)
                     elif "2차" in action_status:
-                        realized_pnl = round(0.35 * 25.0 + 0.35 * 50.0, 1)  # 26.2%
+                        realized_pnl = round(0.35 * 25.0 + 0.35 * 50.0, 1)
                     elif "🚨" in action_status:
                         next_open = float(after_df['Open'].iloc[0]) if len(after_df) > 0 else curr_p
                         open_exit_ret = ((next_open - entry_p) / entry_p) * 100.0
@@ -4453,7 +4455,7 @@ def scan_all_historical_midterm_signals(assets_dict):
                         "최대 파동 수익률 (%)": max_ret,
                         "추천 매매 대응": action_status,
                         "누적 실전 PnL (%)": cum_pnl,
-                        "raw_curr_ret": cum_pnl
+                        "raw_curr_ret": curr_ret  # 💡 PF/승률 정상 계산을 위해 실제 손익률(curr_ret) 바인딩
                     })
             return hits
         except Exception:
