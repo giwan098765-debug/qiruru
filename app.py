@@ -4616,33 +4616,18 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
 
     historical_hits = []
     processed = 0
-    last_pct = 0
 
     with ThreadPoolExecutor(max_workers=50) as executor:
         futures = {executor.submit(stock_history_task, task, ctx): task for task in all_tasks}
         for future in as_completed(futures):
             processed += 1
-            task_info = futures[future]
-            stock_name = task_info[1]
-
-            target_pct = int((processed / total_count) * 100)
-            if target_pct > last_pct:
-                for p in range(last_pct + 1, target_pct + 1):
-                    progress_bar.progress(p / 100.0)
-                last_pct = target_pct
-
-            status_box.markdown(
-                f"🚀 **실시간 전 시장 초고속 스캔 중...** `{processed}/{total_count}` ({target_pct}%) | 분석 중: **{stock_name}**"
-            )
-
+            status_box.markdown(f"🚀 **과거 1년 데이터 정밀 스캔 중...** `{processed}/{total_count}`")
+            progress_bar.progress(min(1.0, processed / total_count))
             try:
                 hits = future.result()
                 if hits: historical_hits.extend(hits)
             except Exception:
                 pass
-
-    if last_pct < 100:
-        progress_bar.progress(1.0)
 
     progress_bar.progress(1.0)
     status_box.success(f"✅ 초고속 과거 1년 스캔 완료! 총 {len(historical_hits)}건의 정예 추천 포착 기록을 찾았습니다.")
