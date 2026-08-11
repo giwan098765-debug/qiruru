@@ -2665,24 +2665,26 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("### 🏅 30년 베테랑 분할 청산 및 익절 전술 보드")
+        st.markdown("### 🏅 30년 베테랑 6M~1Y 분할 진입 & 물타기 전술 보드")
         base_price = entry_price if ('entry_price' in locals() and entry_price > 0) else entry_target_p
-        veteran_stop_loss = ai['poc_price']
-        fallback_entry = round(base_price * 0.94, 1)  
-        target_profit = round(base_price * 1.12, 1)  
+        veteran_stop_loss = round(base_price * 0.91, 1)  # -9.0% 구조적 손절가 (200일선/20주선 붕괴 시)
+        fallback_entry = round(base_price * 0.94, 1)     # 1차 50% 지정가 진입가
+        water_entry = round(base_price * 0.825, 1)       # 2차 50% 전략적 물타기 타점 (-17.5% 눌림목)
+        target_profit = round(base_price * 1.15, 1)     # 목표 익절가 (+15%)
 
         if currency_symbol == "₩":
             txt_entry, txt_stop = f"{currency_symbol}{fallback_entry:,.0f}", f"{currency_symbol}{veteran_stop_loss:,.0f}"
-            txt_target = f"{currency_symbol}{target_profit:,.0f}"
+            txt_water, txt_target = f"{currency_symbol}{water_entry:,.0f}", f"{currency_symbol}{target_profit:,.0f}"
         else:
             txt_entry, txt_stop = f"{currency_symbol}{fallback_entry:,.1f}", f"{currency_symbol}{veteran_stop_loss:,.1f}"
-            txt_target = f"{currency_symbol}{target_profit:,.1f}"
+            txt_water, txt_target = f"{currency_symbol}{water_entry:,.1f}", f"{currency_symbol}{target_profit:,.1f}"
 
         st.markdown(f"""
-        <div style="background-color:#1e293b55; padding:12px; border-radius:6px; border: 1px solid #475569; font-size:13px; line-height:1.6;">
-            <div>📉 <b>현실적 눌림목 진입가:</b> <b style="color:#f43f5e; font-size:15px;">{txt_entry}</b></div>
-            <div>🚨 <b>리스크 방어선 손절가:</b> <b style="color:#3b82f6; font-size:14px;">{txt_stop}</b></div>
-            <hr style="border:0; border-top:1px solid #475569; margin:10px 0;">
+        <div style="background-color:#1e293b55; padding:12px; border-radius:6px; border: 1px solid #475569; font-size:13px; line-height:1.7;">
+            <div>🛒 <b>1차 50% 추천 진입가:</b> <b style="color:#38bdf8; font-size:14px;">{txt_entry}</b></div>
+            <div>💧 <b>2차 50% 전략적 물타기 타점:</b> <b style="color:#eab308; font-size:14px;">{txt_water}</b> <span style="font-size:11px; color:#cbd5e1;">(-15%~-20% 대파동 눌림목 / 200일선 사수 시)</span></div>
+            <div>🚨 <b>구조적 손절가 (Stop-Loss):</b> <b style="color:#f43f5e; font-size:14px;">{txt_stop}</b> <span style="font-size:11px; color:#cbd5e1;">(-7%~-10% 또는 200일선/20주선 대량거래 종가 붕괴시)</span></div>
+            <hr style="border:0; border-top:1px solid #475569; margin:8px 0;">
             <div>🎯 <b>목표 익절가:</b> <b style="color:#10b981; font-size:16px;">{txt_target}</b></div>
         </div>
         """, unsafe_allow_html=True)
@@ -3942,8 +3944,8 @@ def stock_history_task(task_tuple, ctx_obj):
         start_search_idx = max(60, total_len - 500)
         
         last_hit_bar = -99
-        for pos in range(start_search_idx, total_len - 3, 2):
-            if pos - last_hit_bar < 10: continue
+        for pos in range(start_search_idx, total_len, 1):
+            if pos - last_hit_bar < 5: continue
             
             latest = df_proc.iloc[pos]
             prev = df_proc.iloc[pos - 1] if pos > 0 else latest
@@ -4016,6 +4018,7 @@ def stock_history_task(task_tuple, ctx_obj):
                 # 💡 [날짜별 차트 일자 정밀 시뮬레이션 - 텐베거 파동 추적 알고리즘]
                 max_so_far = entry_p
                 min_so_far = entry_p
+                water_count = 0
                 avg_price = entry_p
 
                 is_tp1_done = False
@@ -4051,7 +4054,12 @@ def stock_history_task(task_tuple, ctx_obj):
                     b_ma60  = float(b_row['MA_60'])  if 'MA_60' in b_row and pd.notnull(b_row['MA_60']) else b_close
                     b_ma20  = float(b_row['MA_20'])  if 'MA_20' in b_row and pd.notnull(b_row['MA_20']) else b_close
 
-                    b_dead = (b_close < b_ma200) and (b_ma20 < b_ma60 < b_ma200) and (init_curr_ret <= -6.0)
+                    b_dead = (b_close < b_ma200 and b_close < b_ma60) and (init_curr_ret <= -12.0)
+
+                    # 🟢 [전략적 물타기(2차 50% 진입)] 실적 이상 무 + -10%~-25% 대파동 눌림목 + 200일선/60일선 대세 지지선 사수 시 1:1 추가매수
+                    if water_count == 0 and (-25.0 <= init_curr_ret <= -10.0 or -25.0 <= init_min_ret <= -10.0) and (b_close >= b_ma200 or b_close >= b_ma60) and not b_dead:
+                        water_count = 1
+                        avg_price = round((entry_p + b_close) / 2.0, 2)  # 1차 50% + 2차 50% 실측 분할 매수로 평단가 단축
 
                     w_ret_curr = ((max_so_far - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
                     c_ret_curr = ((b_close - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
@@ -4084,18 +4092,19 @@ def stock_history_task(task_tuple, ctx_obj):
                         elif w_ret_curr >= 10.0: b_tstop = 5.0
                         elif w_ret_curr >= 2.0: b_tstop = 0.5  # 🎯 +2%~+9.9% 최고 수익 올랐다가 하락 시 +0.5% 매도 방어선!
 
-                    if b_dead or c_ret_curr <= -7.0:
-                        exact_exit_date_str = b_date_str
-                        is_dead_trend = True
-                        exit_price = b_close
-                        realized_sum = -7.0
-                        rem_qty = 0.0
-                        break
-                    elif b_tstop > -900.0 and c_ret_curr <= b_tstop:
+                    if b_tstop > -900.0 and c_ret_curr <= b_tstop:
                         exact_exit_date_str = b_date_str
                         is_trailing_closed = True
                         exit_price = b_close
-                        realized_sum = round(realized_sum + rem_qty * c_ret_curr, 1)
+                        exit_ret_val = max(b_tstop, c_ret_curr) if b_tstop > 0 else c_ret_curr
+                        realized_sum = round(realized_sum + rem_qty * exit_ret_val, 1)
+                        rem_qty = 0.0
+                        break
+                    elif b_dead or (not (b_close >= b_ma200 or b_close >= b_ma60) and c_ret_curr <= -10.0):
+                        exact_exit_date_str = b_date_str
+                        is_dead_trend = True
+                        exit_price = b_close
+                        realized_sum = -10.0
                         rem_qty = 0.0
                         break
                     # 🌟 텐베거 무제한 파동 수용: 상한선 캡(300%)을 없애고 고점 대비 -20% 트레일링으로 +700%+까지 보유
@@ -4104,8 +4113,8 @@ def stock_history_task(task_tuple, ctx_obj):
                 max_wave_ret = ((max_so_far - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
                 max_ret_pct = round(max_wave_ret, 1)
 
-                # 💡 [최소 5%+ 확실한 파동 수익률 보장 종목 필터링]
-                if max_wave_ret < 5.0 and not is_dead_trend:
+                # 💡 [최소 2%+ 이상 상승 후 방어선 청산 포함 필터링]
+                if max_wave_ret < 2.0 and not is_dead_trend and not is_trailing_closed:
                     continue
 
                 if rem_qty <= 0:
@@ -4120,21 +4129,38 @@ def stock_history_task(task_tuple, ctx_obj):
                 curr_dt = pd.to_datetime(df_proc['Date'].iloc[-1]).tz_localize(None)
                 days_passed = len(pd.date_range(start=rec_dt, end=curr_dt, freq='B')) - 1
 
-                if is_dead_trend or final_ret_pct <= -7.0:
+                if is_dead_trend and not is_trailing_closed:
                     final_ret_pct = -7.0
-                    status_txt = f"🚨 전량 손절 (-7.0%) [{exact_exit_date_str}]"
+                    status_txt = f"🚨 구조적 손절 (-7%~-10% / 200일선 붕괴) [{exact_exit_date_str}]"
+                    action_guide = "🛑 무조건 손절: 200일선/20주선 대량거래 종가 붕괴. 기계적 손절매로 리스크를 차단하세요."
                 elif is_trailing_closed:
                     status_txt = f"🎯 1차 익절 + 🛡️ 방어선 청산 (+{final_ret_pct:.1f}%) [{exact_exit_date_str}]" if is_tp1_done else f"🛡️ 익절 방어선 청산 (+{final_ret_pct:.1f}%) [{exact_exit_date_str}]"
+                    action_guide = f"🛡️ 방어선 청산 완료: 고점 달성 후 방어선(+{final_ret_pct:.1f}%) 이탈에 따라 안전하게 청산되었습니다."
                 elif is_tp3_done:
                     status_txt = f"🔥 전량 익절 [{exact_exit_date_str}]"
+                    action_guide = "🔥 전량 익절 완료: +100% 대파동 목표 달성으로 100% 수익 확정 청산되었습니다."
                 elif is_tp2_done:
-                    status_txt = "🎯 2차 익절 진행중"
+                    status_txt = "🎯 2차 익절 진행중 (+60% 달성)"
+                    action_guide = "🎯 2차 익절 완료: 30% 수량 익절 완료 후 잔여 수량 텐베거 대파동 보유 중입니다."
                 elif is_tp1_done:
-                    status_txt = "🎯 1차 익절 진행중"
+                    status_txt = "🎯 1차 익절 진행중 (+30% 달성)"
+                    action_guide = "🎯 1차 익절 완료: 15% 수량 익절로 원금 회수 후 85% 수량 끝까지 우상향 홀딩하세요."
+                elif water_count == 1:
+                    status_txt = "💧 대파동 눌림목 2차 (2차 50% 물타기 체결)"
+                    action_guide = "🟢 대파동 눌림목 2차 완료: -15%~-20% 구간 2차 50% 분할 투입으로 평단가를 대폭 단축했습니다."
+                elif init_curr_ret <= -10.0 and not is_dead_trend:
+                    status_txt = "💧 대파동 눌림목 2차 (2차 50% 물타기 타점)"
+                    action_guide = "🟢 대파동 눌림목 2차 추천 타점: 실적 이상 무 + 200일선/20주선 지지 사수 중! 2차 50% 추가매수 투입 적기입니다."
                 elif days_passed <= 5 and not is_tp1_done:
-                    status_txt = "🛒 신규 매수"
+                    status_txt = "🛒 신규 매수 (1차 50% 진입)"
+                    action_guide = "🛒 신규 매수 추천: 200일선 바닥 탈출 포착! 목표 자금의 1차 50% 지정가 비중으로 진입하세요."
                 else:
-                    status_txt = "🟢 수익 진행중" if final_ret_pct >= 0 else "🌊 눌림 진행중"
+                    if final_ret_pct >= 0:
+                        status_txt = f"🟢 수익 진행중 (+{final_ret_pct:.1f}%)"
+                        action_guide = "🟢 홀딩 유지: 주봉 20주선 우상향 정배열 대세 상승파 보유 중입니다."
+                    else:
+                        status_txt = "🌊 눌림 진행중 (대기)"
+                        action_guide = "🌊 대기/관망: 200일선 지지 여부를 확인하며 -15%~-20% 2차 물타기 타점을 대기하세요."
 
             is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
             fmt_entry = f"₩{entry_p:,.0f}" if is_krw else f"${entry_p:,.2f}"
@@ -4160,6 +4186,7 @@ def stock_history_task(task_tuple, ctx_obj):
                 "1년 목표 수익률 (%)": target_1y_pct,
                 "mtf_score": mtf_score,
                 "상태": status_txt,
+                "AI 실전 대안 지침": action_guide,
                 "raw_curr_ret": final_ret_pct
             })
         return hits
@@ -4556,7 +4583,7 @@ def bg_scan_worker_midterm(assets_dict):
 # ====================================================================
 # ⚡ [과거 1년 초고속 전수 스캔] 볼린저밴드 상단 차단 제거 버전
 # ====================================================================
-def scan_all_historical_midterm_signals(assets_dict):
+def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
         ctx = get_script_run_ctx()
@@ -4567,8 +4594,10 @@ def scan_all_historical_midterm_signals(assets_dict):
     us_items = {k: v for k, v in assets_dict["💲 미국 주식"].items() if not any(x in k for x in ["등극주", "시총", "주요통화"])}
 
     all_tasks = []
-    for k, v in kr_items.items(): all_tasks.append(("국내", k, v))
-    for k, v in us_items.items(): all_tasks.append(("미국", k, v))
+    if target_market in ["국내", "전체"]:
+        for k, v in kr_items.items(): all_tasks.append(("국내", k, v))
+    if target_market in ["미국", "전체"]:
+        for k, v in us_items.items(): all_tasks.append(("미국", k, v))
 
     total_count = len(all_tasks)
     if total_count == 0: return []
@@ -5189,16 +5218,33 @@ with main_tab2:
 with main_tab3:
     st.markdown("### 🚀 6개월~1년 중장기 정예 유망주 관제탑")
     
-    st.markdown("""
-    <div style="background-color: #0f172a; padding: 14px 18px; border-radius: 8px; border: 1px solid #334155; margin: 10px 0 15px 0; font-size: 13px; line-height: 1.7;">
-        <div style="font-weight: bold; color: #10b981; font-size: 14px; margin-bottom: 8px;">💡 6M~1Y 중장기 +100% 목표 초엄격 스캐닝 & 실전 매매 지침</div>
-        <div style="color: #e2e8f0;">
-            • <b>1. 신규 매수 원칙:</b> 추천 포착 시 최적의 비중으로 진입합니다.<br>
-            • <b>2. 쉬운 우량주 엄선법:</b> ①MTS/네이버 시총 상위 대형주 중 ➔ ②<b>주봉 차트가 우상향</b>하고 ➔ ③<b>일봉 20일선 근처까지 주가가 숨고르기(눌림)</b>를 할 때를 최우선으로 선택합니다.<br>
-            • <b>3. 상태별 핵심 대응:</b> <b>🛒신규매수</b> ➔ <b>🌊눌림</b>(대기) ➔ <b>🎯익절</b>(+2.0%~+9.9% 최고수익 후 하락 시 +0.5% 방어 / +30%+ 분할익절) ➔ <b>🛡️청산/🚨손절</b>(트레일링/-7% 기계적 매도).
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("""<div style="background-color: #0f172a; border: 1px solid #3b82f6; padding: 16px 20px; border-radius: 10px; margin: 10px 0 20px 0; color: #f8fafc;">
+<div style="font-size: 15px; font-weight: bold; color: #60a5fa; margin-bottom: 10px;">
+🛡️ 6M~1Y 관점 물타기(추가매수) vs 구조적 손절(Cut) 매매 원칙
+</div>
+<div style="font-size: 13px; line-height: 1.7; color: #cbd5e1;">
+<p style="margin-bottom: 10px;">
+<b>📌 1. <span style="color:#f43f5e;">🛑 무조건 손절(Cut)</span>해야 하는 3가지 핵심 상황</b><br>
+① <b>실적/산업 파괴:</b> 매출 및 영업이익 역성장 전환 또는 구조적 재무 악화<br>
+② <b>대세 추세선 붕괴:</b> 일봉 200일선 또는 주봉 20주선/50주선을 대량 거래량과 함께 하향 종가 이탈시<br>
+③ <b>대세 약세장(Bear Market):</b> KOSPI / S&P 500 대표 지수가 200일선 아래로 추락하는 장세 진입시
+</p>
+<p style="margin-bottom: 10px;">
+<b>📌 2. <span style="color:#10b981;">🟢 전략적 물타기(추가매수)</span>가 가능한 3가지 상황</b><br>
+① <b>계획된 50:50 분할진입:</b> 1차 50% 진입 후 <b>-15%~-20% 대파동 눌림목</b>에서 2차 50% 분할 투입 시나리오<br>
+② <b>실적 이상 무 + 지수 악재:</b> 기업 실적 사상 최대 지속 중 거래량 없이 지수 공포로 일시 밀렸을 때<br>
+③ <b>대세 지지선 사수:</b> 주봉 20주선 또는 주요 매물대(POC) 박스 하단을 몸통으로 강하게 지지할 때
+</p>
+<p style="margin: 0;">
+<b>📌 3. 수익 구간별 익절 방어선 상세 기준 (Trailing Stop)</b><br>
+• <b>[최고 수익률 +2.0% ~ +9.9%]</b> ➔ <b>+0.5% 익절 방어선 확정</b> (원금 보존 및 최소 +0.5% 수익 확정)<br>
+• <b>[수익률 +10% ~ +20%]</b> ➔ <b>+5.0% 익절 방어선 확정</b> (최소 +5% 수익 보증 및 본절 방어)<br>
+• <b>[수익률 +20% ~ +50%]</b> ➔ <b>최고점 대비 -12.0% 동적 방어선</b> (단기 상승 파동 보존)<br>
+• <b>[수익률 +50% ~ +100%]</b> ➔ <b>최고점 대비 -15.0% 동적 방어선</b> (중기 대시세 파동 안전망)<br>
+• <b>[수익률 +100% 이상 (대파동)]</b> ➔ <b>최고점 대비 -20.0% 여유 방어선</b> (Class A 대파동 완주 및 무제한 수확)
+</p>
+</div>
+</div>""", unsafe_allow_html=True)
 
     # ----------------------------------------------------------------
     # 과거 1년 전체 종목 추천 날짜 & 수익률 전수 조사
@@ -5206,12 +5252,26 @@ with main_tab3:
     st.markdown("#### 과거 1년 전체 종목 추천 날짜 & 수익률 전수 조사")
     st.markdown("<div style='color: #38bdf8; font-weight: bold; font-size: 14px; margin-bottom: 10px;'>✨ 과거 1년 내 포착된 종목과 추천 날짜 및 현재/최고 수익률 표 ✨</div>", unsafe_allow_html=True)
 
-    # 💡 프로그레스 바(Bar) & 실시간 분석 종목명 라이브 표시 버튼 로직
-    if st.button("🔥 과거 1년 추천 날짜/수익률 전체 전수 스캔", key="btn_history_all_scan", use_container_width=True):
-        init_midterm_db()
-        history_results = scan_all_historical_midterm_signals(ASSETS)
-        if history_results:
-            st.session_state['history_scan_table'] = history_results
+    # 💡 국내 주식 / 미국 주식 개별 스캔 및 전체 전수 스캔 분할 선택 버튼
+    col_btn_kr, col_btn_us, col_btn_all = st.columns(3)
+    with col_btn_kr:
+        if st.button("🇰🇷 국내 주식 과거 1년 전수 스캔", key="btn_history_kr_scan", use_container_width=True):
+            init_midterm_db()
+            history_results = scan_all_historical_midterm_signals(ASSETS, target_market="국내")
+            if history_results:
+                st.session_state['history_scan_table'] = history_results
+    with col_btn_us:
+        if st.button("🇺🇸 미국 주식 과거 1년 전수 스캔", key="btn_history_us_scan", use_container_width=True):
+            init_midterm_db()
+            history_results = scan_all_historical_midterm_signals(ASSETS, target_market="미국")
+            if history_results:
+                st.session_state['history_scan_table'] = history_results
+    with col_btn_all:
+        if st.button("🔥 전체(국내+미국) 1년 전수 스캔", key="btn_history_all_scan", use_container_width=True):
+            init_midterm_db()
+            history_results = scan_all_historical_midterm_signals(ASSETS, target_market="전체")
+            if history_results:
+                st.session_state['history_scan_table'] = history_results
 
     history_table_data = st.session_state.get('history_scan_table', [])
 
@@ -5246,8 +5306,8 @@ with main_tab3:
         </div>
         """, unsafe_allow_html=True)
 
-        # 🌟 [사용자 요청] 1열 2개 컬럼 구조: 국내 1~3위 & 미국 1~3위 주도 섹터 1년 최고 상승 잠재주
-        active_buys = df_display[df_display['상태'].str.contains('신규 매수|수익 진행중', na=False)]
+        # 🌟 [동적 마켓 레이아웃] 국내만 스캔 시 미국 삭제, 미국만 스캔 시 국내 삭제, 개별 추천 포착 날짜 결합
+        active_buys = df_display[df_display['상태'].str.contains('신규 매수|수익 진행중|눌림|익절|방어선', na=False)]
         if active_buys.empty:
             active_buys = df_display.copy()
 
@@ -5256,17 +5316,60 @@ with main_tab3:
         kr_active = active_buys[active_buys['시장'] == '국내'].sort_values(by=[sort_col], ascending=False).head(3)
         us_active = active_buys[active_buys['시장'] == '미국'].sort_values(by=[sort_col], ascending=False).head(3)
 
-        if kr_active.empty: kr_active = df_display[df_display['시장'] == '국내'].head(3)
-        if us_active.empty: us_active = df_display[df_display['시장'] == '미국'].head(3)
-
-        st.markdown("##### 🔥 1년 내 주도 섹터 최고 상승 잠재주 (국내 1~3위 / 미국 1~3위)")
-        col_kr_box, col_us_box = st.columns(2)
+        has_kr = not kr_active.empty
+        has_us = not us_active.empty
 
         medals = ["🥇 1위", "🥈 2위", "🥉 3위"]
         rank_colors = ["#f59e0b", "#94a3b8", "#b45309"]
 
-        # 🇰🇷 국내 1~3위 박스
-        with col_kr_box:
+        if has_kr and has_us:
+            st.markdown("##### 🔥 1년 내 주도 섹터 최고 상승 잠재주 (국내 1~3위 / 미국 1~3위)")
+            col_kr_box, col_us_box = st.columns(2)
+            
+            with col_kr_box:
+                st.markdown("""
+                <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
+                    <b style="color: #38bdf8; font-size: 15px;">🇰🇷 국내 주도 섹터 Top 1·2·3 정예 추천주</b>
+                </div>
+                """, unsafe_allow_html=True)
+                for idx, (_, row_item) in enumerate(kr_active.iterrows()):
+                    s_name = row_item['종목명']
+                    s_ent  = row_item['추천 진입가']
+                    s_date = row_item.get('추천 포착 날짜', '')
+                    s_target_1y = row_item.get('1년 목표 수익률 (%)', row_item['최대 파동 수익률 (%)'] * 1.35 + 15.0)
+                    st.markdown(f"""
+                    <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 6px; border: 1px solid {rank_colors[idx]}; margin-bottom: 10px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name} <span style="font-size: 12px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
+                        </div>
+                        <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 3px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
+                        <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            with col_us_box:
+                st.markdown("""
+                <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
+                    <b style="color: #f43f5e; font-size: 15px;">🇺🇸 미국 주도 섹터 Top 1·2·3 정예 추천주</b>
+                </div>
+                """, unsafe_allow_html=True)
+                for idx, (_, row_item) in enumerate(us_active.iterrows()):
+                    s_name = row_item['종목명']
+                    s_ent  = row_item['추천 진입가']
+                    s_date = row_item.get('추천 포착 날짜', '')
+                    s_target_1y = row_item.get('1년 목표 수익률 (%)', row_item['최대 파동 수익률 (%)'] * 1.35 + 15.0)
+                    st.markdown(f"""
+                    <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 6px; border: 1px solid {rank_colors[idx]}; margin-bottom: 10px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name} <span style="font-size: 12px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
+                        </div>
+                        <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 3px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
+                        <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+        elif has_kr:
+            st.markdown("##### 🔥 1년 내 주도 섹터 최고 상승 잠재주 (국내 1~3위)")
             st.markdown("""
             <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
                 <b style="color: #38bdf8; font-size: 15px;">🇰🇷 국내 주도 섹터 Top 1·2·3 정예 추천주</b>
@@ -5275,20 +5378,20 @@ with main_tab3:
             for idx, (_, row_item) in enumerate(kr_active.iterrows()):
                 s_name = row_item['종목명']
                 s_ent  = row_item['추천 진입가']
+                s_date = row_item.get('추천 포착 날짜', '')
                 s_target_1y = row_item.get('1년 목표 수익률 (%)', row_item['최대 파동 수익률 (%)'] * 1.35 + 15.0)
                 st.markdown(f"""
                 <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 6px; border: 1px solid {rank_colors[idx]}; margin-bottom: 10px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                        <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name}</span>
-                        <span style="font-size: 15px; color: #ffffff; font-weight: bold;"></span>
+                        <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name} <span style="font-size: 12px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
                     </div>
                     <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 3px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
                     <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-        # 🇺🇸 미국 1~3위 박스
-        with col_us_box:
+        elif has_us:
+            st.markdown("##### 🔥 1년 내 주도 섹터 최고 상승 잠재주 (미국 1~3위)")
             st.markdown("""
             <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
                 <b style="color: #f43f5e; font-size: 15px;">🇺🇸 미국 주도 섹터 Top 1·2·3 정예 추천주</b>
@@ -5297,48 +5400,32 @@ with main_tab3:
             for idx, (_, row_item) in enumerate(us_active.iterrows()):
                 s_name = row_item['종목명']
                 s_ent  = row_item['추천 진입가']
+                s_date = row_item.get('추천 포착 날짜', '')
                 s_target_1y = row_item.get('1년 목표 수익률 (%)', row_item['최대 파동 수익률 (%)'] * 1.35 + 15.0)
                 st.markdown(f"""
                 <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 6px; border: 1px solid {rank_colors[idx]}; margin-bottom: 10px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                        <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name}</span>
-                        <span style="font-size: 15px; color: #ffffff; font-weight: bold;"></span>
+                        <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name} <span style="font-size: 12px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
                     </div>
                     <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 3px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
                     <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-        # 🛡️ [사용자 요청] 익절 방어선 구조 안내 박스 (0들여쓰기로 코드블록 변환 방지)
-        info_box_html = """<div style="background-color: #0f172a; border: 2px solid #3b82f6; padding: 18px; border-radius: 12px; margin-bottom: 20px; color: #f8fafc;">
-<div style="font-size: 16px; font-weight: bold; color: #60a5fa; margin-bottom: 12px;">
-🛡️ 월가 퀀트 헤지펀드 익절 방어선 매매 규칙 가이드
-</div>
-<div style="font-size: 13px; line-height: 1.8; color: #cbd5e1;">
-<p style="margin-bottom: 12px;">
-<b>📌 1. 삼천당제약처럼 며칠 사이에 급락하는 종목 방어 원리</b><br>
-바이오나 고변동성 주도주가 고점 달성 후 며칠 만에 급락할 때는 <b>'고점 대비 동적 트레일링 방어선'</b>이 자동 작동합니다. 주가가 최고점을 경신할 때마다 방어선이 고점 바로 밑까지 바짝 따라붙기 때문에, 갑작스러운 급락이 나오더라도 <b>확보한 100%+ 이상의 수익을 안전하게 락인(Lock-in)하고 즉시 자동 익절 청산</b>됩니다.
-</p>
-<p style="margin-bottom: 12px;">
-<b>📌 2. 수익 구간별 익절 방어선 상세 기준</b><br>
-• <b>[최고 수익률 +2.0% ~ +9.9%]</b> ➔ <b>+0.5% 익절 방어선 확정</b> (원금 보존 및 최소 +0.5% 수익 확정)<br>
-• <b>[수익률 +10% ~ +20%]</b> ➔ <b>+5.0% 익절 방어선 확정</b> (최소 +5% 수익 보증 및 본절 방어)<br>
-• <b>[수익률 +20% ~ +50%]</b> ➔ <b>최고점 대비 -12.0% 동적 방어선</b> (단기 상승 파동 보존)<br>
-• <b>[수익률 +50% ~ +100%]</b> ➔ <b>최고점 대비 -15.0% 동적 방어선</b> (중기 대시세 파동 안전망)<br>
-• <b>[수익률 +100% 이상 (대파동)]</b> ➔ <b>최고점 대비 -20.0% 여유 방어선</b> (Class A 대파동 완주 및 무제한 수확)
-</p>
-<p style="margin: 0;">
-<b>📌 3. 1차 분할 익절 & 85% 메인 수량 온존 전략</b><br>
-+30% 도달 시 <b>15% 수량만 1차 익절</b>하여 투자 원금을 100% 안전하게 회수하고, <b>남은 85% 메인 수량</b>은 동적 방어선이 이탈하지 않는 한 텐베거 대파동 마감 시점까지 끝까지 우상향 홀딩합니다.
-</p>
-</div>
-</div>"""
-        st.markdown(info_box_html, unsafe_allow_html=True)
-
-        cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "평단가", "현재가", "현재/최종 수익률 (%)", "최대 파동 수익률 (%)", "상태"] if '평단가' in df_display.columns else ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "현재 수익률 (%)", "최대 파동 수익률 (%)", "상태"]
-        table_df = df_display[cols_to_show]
+        base_cols = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "현재/최종 수익률 (%)", "최대 파동 수익률 (%)", "상태"]
+        if "평단가" in df_display.columns: base_cols.insert(4, "평단가")
+        if "AI 실전 대안 지침" in df_display.columns: base_cols.append("AI 실전 대안 지침")
+        table_df = df_display[base_cols]
 
         st.markdown("##### 🏆 과거 1년 포착 종목 순위표 (수익률 내림차순)")
+
+        filter_option = st.radio("🎯 상태별 종목 골라보기:", ["전체 보기", "🛒 눌림목 2차 종목만 보기", "🛒 신규 매수 추천 종목만 보기", "🎯 익절/방어선 청산 종목만 보기"], horizontal=True, key="rad_status_filter")
+        if filter_option == "💧 대파동 눌림목 2차 (물타기) 종목만 보기":
+            table_df = table_df[table_df['상태'].str.contains("대파동 눌림목|물타기", na=False)]
+        elif filter_option == "🛒 눌림목 2차 종목만 보기":
+            table_df = table_df[table_df['상태'].str.contains("신규 매수", na=False)]
+        elif filter_option == "🎯 익절/방어선 청산 종목만 보기":
+            table_df = table_df[table_df['상태'].str.contains("익절|청산", na=False)]
 
         search_keyword = st.text_input("🔍 종목 검색 (한 글자만 입력해도 자동 검색):", placeholder="예: 삼, 현대, 카카오", key="tab3_stock_search").strip()
 
