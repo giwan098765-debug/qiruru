@@ -4546,7 +4546,7 @@ def bg_scan_worker_midterm(assets_dict):
 # ⚡ [과거 1년 초고속 전수 스캔] 볼린저밴드 상단 차단 제거 버전
 # ====================================================================
 def scan_all_historical_midterm_signals(assets_dict):
-    from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx계	+1,230.9%
+    from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
     ctx = get_script_run_ctx()
 
     kr_items = {k: v for k, v in assets_dict["₩ 국내 주식"].items() if not any(x in k for x in ["등극주", "시총", "주요통화"])}
