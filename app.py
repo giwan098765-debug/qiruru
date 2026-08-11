@@ -5306,10 +5306,17 @@ with main_tab3:
         </div>
         """, unsafe_allow_html=True)
 
-        # 🌟 [동적 마켓 레이아웃] 국내만 스캔 시 미국 삭제, 미국만 스캔 시 국내 삭제, 개별 추천 포착 날짜 결합
-        active_buys = df_display[df_display['상태'].str.contains('신규 매수|수익 진행중|눌림|익절|방어선', na=False)]
-        if active_buys.empty:
-            active_buys = df_display.copy()
+        # 🌟 [사용자 요청 1] Top 1-3 정예주: 금일 기준 최근 1개월(30일) 이내 추천 포착된 신규 1차 매수 & 2차 눌림목 매수주 중에서만 엄선
+        curr_today = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
+        df_display['dt_hit'] = pd.to_datetime(df_display['추천 포착 날짜'], errors='coerce')
+        
+        # 최근 35일 이내 추천된 활성 시그널 필터링
+        recent_1m = df_display[df_display['dt_hit'] >= (curr_today - pd.Timedelta(days=35))].copy()
+        if recent_1m.empty: recent_1m = df_display.copy()
+
+        # 1차 매수(신규 매수) 및 2차 눌림목 매수(물타기) 상태 종목만 타겟팅
+        active_buys = recent_1m[recent_1m['상태'].str.contains('신규 매수|눌림목|물타기|1차|2차', na=False)].copy()
+        if active_buys.empty: active_buys = recent_1m.copy()
 
         sort_col = 'mtf_score' if 'mtf_score' in active_buys.columns else '최대 파동 수익률 (%)'
 
@@ -5323,13 +5330,13 @@ with main_tab3:
         rank_colors = ["#f59e0b", "#94a3b8", "#b45309"]
 
         if has_kr and has_us:
-            st.markdown("##### 🔥 1년 내 주도 섹터 최고 상승 잠재주 (국내 1~3위 / 미국 1~3위)")
+            st.markdown("##### 🔥 최근 1개월 내 주도 섹터 최고 상승 잠재주 (국내 1~3위 / 미국 1~3위)")
             col_kr_box, col_us_box = st.columns(2)
             
             with col_kr_box:
                 st.markdown("""
                 <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
-                    <b style="color: #38bdf8; font-size: 15px;">🇰🇷 국내 주도 섹터 Top 1·2·3 정예 추천주</b>
+                    <b style="color: #38bdf8; font-size: 15px;">🇰🇷 국내 주도 섹터 Top 1·2·3 정예 추천주 (최근 1개월)</b>
                 </div>
                 """, unsafe_allow_html=True)
                 for idx, (_, row_item) in enumerate(kr_active.iterrows()):
@@ -5350,7 +5357,7 @@ with main_tab3:
             with col_us_box:
                 st.markdown("""
                 <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
-                    <b style="color: #f43f5e; font-size: 15px;">🇺🇸 미국 주도 섹터 Top 1·2·3 정예 추천주</b>
+                    <b style="color: #f43f5e; font-size: 15px;">🇺🇸 미국 주도 섹터 Top 1·2·3 정예 추천주 (최근 1개월)</b>
                 </div>
                 """, unsafe_allow_html=True)
                 for idx, (_, row_item) in enumerate(us_active.iterrows()):
@@ -5369,10 +5376,10 @@ with main_tab3:
                     """, unsafe_allow_html=True)
 
         elif has_kr:
-            st.markdown("##### 🔥 1년 내 주도 섹터 최고 상승 잠재주 (국내 1~3위)")
+            st.markdown("##### 🔥 최근 1개월 내 주도 섹터 최고 상승 잠재주 (국내 1~3위)")
             st.markdown("""
             <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
-                <b style="color: #38bdf8; font-size: 15px;">🇰🇷 국내 주도 섹터 Top 1·2·3 정예 추천주</b>
+                <b style="color: #38bdf8; font-size: 15px;">🇰🇷 국내 주도 섹터 Top 1·2·3 정예 추천주 (최근 1개월)</b>
             </div>
             """, unsafe_allow_html=True)
             for idx, (_, row_item) in enumerate(kr_active.iterrows()):
@@ -5391,10 +5398,10 @@ with main_tab3:
                 """, unsafe_allow_html=True)
 
         elif has_us:
-            st.markdown("##### 🔥 1년 내 주도 섹터 최고 상승 잠재주 (미국 1~3위)")
+            st.markdown("##### 🔥 최근 1개월 내 주도 섹터 최고 상승 잠재주 (미국 1~3위)")
             st.markdown("""
             <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
-                <b style="color: #f43f5e; font-size: 15px;">🇺🇸 미국 주도 섹터 Top 1·2·3 정예 추천주</b>
+                <b style="color: #f43f5e; font-size: 15px;">🇺🇸 미국 주도 섹터 Top 1·2·3 정예 추천주 (최근 1개월)</b>
             </div>
             """, unsafe_allow_html=True)
             for idx, (_, row_item) in enumerate(us_active.iterrows()):
@@ -5419,25 +5426,40 @@ with main_tab3:
 
         st.markdown("##### 🏆 과거 1년 포착 종목 순위표 (수익률 내림차순)")
 
-        filter_option = st.radio("🎯 상태별 종목 골라보기:", ["전체 보기", "🛒 눌림목 2차 종목만 보기", "🛒 신규 매수 추천 종목만 보기", "🎯 익절/방어선 청산 종목만 보기"], horizontal=True, key="rad_status_filter")
-        if filter_option == "💧 대파동 눌림목 2차 (물타기) 종목만 보기":
-            table_df = table_df[table_df['상태'].str.contains("대파동 눌림목|물타기", na=False)]
-        elif filter_option == "🛒 눌림목 2차 종목만 보기":
-            table_df = table_df[table_df['상태'].str.contains("신규 매수", na=False)]
-        elif filter_option == "🎯 익절/방어선 청산 종목만 보기":
-            table_df = table_df[table_df['상태'].str.contains("익절|청산", na=False)]
+        # 🌟 [사용자 요청 3] 필터 라디오 명칭 100% 매칭: 1차 매수 / 2차 매수 / 익절 방어선 / 전량 매도
+        radio_opts = [
+            "전체 보기",
+            "🛒 1차 매수 추천주",
+            "💧 2차 매수 추천주 (눌림목)",
+            "🛡️ 익절 방어선 추천주",
+            "🚨 전량 매도 추천주 (손절)"
+        ]
+        filter_option = st.radio("🎯 상태별 종목 골라보기:", radio_opts, horizontal=True, key="rad_status_filter")
+        if filter_option == "🛒 1차 매수 추천주":
+            table_df = table_df[table_df['상태'].str.contains("신규 매수|1차 매수|1차 50%", na=False)]
+        elif filter_option == "💧 2차 매수 추천주 (눌림목)":
+            table_df = table_df[table_df['상태'].str.contains("대파동 눌림목|물타기|2차", na=False)]
+        elif filter_option == "🛡️ 익절 방어선 추천주":
+            table_df = table_df[table_df['상태'].str.contains("익절|방어선|청산", na=False)]
+        elif filter_option == "🚨 전량 매도 추천주 (손절)":
+            table_df = table_df[table_df['상태'].str.contains("손절|매도|붕괴", na=False)]
 
-        search_keyword = st.text_input("🔍 종목 검색 (한 글자만 입력해도 자동 검색):", placeholder="예: 삼, 현대, 카카오", key="tab3_stock_search").strip()
+        # 🌟 [사용자 요청 4] 쉼표(,) 입력 시 다중 종목 동시 검색 (예: 심텍, 삼성)
+        search_keyword = st.text_input("🔍 종목 검색 (쉼표(,) 구분 시 다중 종목 동시 검색 지원):", placeholder="예: 심텍, 삼성 또는 현대, 카카오", key="tab3_stock_search").strip()
 
         if search_keyword:
-            matched_stocks = table_df[table_df['종목명'].str.contains(search_keyword, case=False, na=False)]['종목명'].unique().tolist()
-            
-            if matched_stocks:
-                st.markdown(f"💡 **연관 종목 ({len(matched_stocks)}개):** <span style='color:#38bdf8;'>{', '.join(matched_stocks)}</span>", unsafe_allow_html=True)
-                table_df = table_df[table_df['종목명'].str.contains(search_keyword, case=False, na=False)]
-            else:
-                st.warning(f"⚠️ '{search_keyword}' 글자가 포함된 종목이 없습니다.")
-                table_df = table_df.iloc[0:0]
+            import re
+            keywords = [k.strip() for k in search_keyword.split(",") if k.strip()]
+            if keywords:
+                pattern = "|".join([re.escape(k) for k in keywords])
+                matched_stocks = table_df[table_df['종목명'].str.contains(pattern, case=False, na=False)]['종목명'].unique().tolist()
+                
+                if matched_stocks:
+                    st.markdown(f"💡 **검색 포착 종목 ({len(matched_stocks)}개):** <span style='color:#38bdf8;'>{', '.join(matched_stocks)}</span>", unsafe_allow_html=True)
+                    table_df = table_df[table_df['종목명'].str.contains(pattern, case=False, na=False)]
+                else:
+                    st.warning(f"⚠️ '{search_keyword}' 검색어와 일치하는 종목이 없습니다.")
+                    table_df = table_df.iloc[0:0]
         
         st.dataframe(
             table_df,
