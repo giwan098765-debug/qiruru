@@ -87,6 +87,19 @@ yf.Ticker = FakeTicker
 # ====================================================================
 macro_trends = {"KR": True, "US": True, "COIN": True}
 import streamlit as st
+try:
+    from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
+except ImportError:
+    try:
+        from streamlit.runtime.scriptrunner_utils import get_script_run_ctx, add_script_run_ctx
+    except ImportError:
+        try:
+            from streamlit.scriptrunner import get_script_run_ctx, add_script_run_ctx
+        except ImportError:
+            def get_script_run_ctx():
+                return None
+            def add_script_run_ctx(thread=None, ctx=None):
+                pass
 import FinanceDataReader as fdr
 import pandas as pd
 import numpy as np
@@ -2652,27 +2665,25 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("### 🏅 30년 베테랑 분할 청산 및 물타기 전술 보드")
+        st.markdown("### 🏅 30년 베테랑 분할 청산 및 익절 전술 보드")
         base_price = entry_price if ('entry_price' in locals() and entry_price > 0) else entry_target_p
         veteran_stop_loss = ai['poc_price']
         fallback_entry = round(base_price * 0.94, 1)  
-        pool_entry_price = round(base_price * 0.88, 1) 
         target_profit = round(base_price * 1.12, 1)  
 
         if currency_symbol == "₩":
             txt_entry, txt_stop = f"{currency_symbol}{fallback_entry:,.0f}", f"{currency_symbol}{veteran_stop_loss:,.0f}"
-            txt_pool, txt_target = f"{currency_symbol}{pool_entry_price:,.0f}", f"{currency_symbol}{target_profit:,.0f}"
+            txt_target = f"{currency_symbol}{target_profit:,.0f}"
         else:
             txt_entry, txt_stop = f"{currency_symbol}{fallback_entry:,.1f}", f"{currency_symbol}{veteran_stop_loss:,.1f}"
-            txt_pool, txt_target = f"{currency_symbol}{pool_entry_price:,.1f}", f"{currency_symbol}{target_profit:,.1f}"
+            txt_target = f"{currency_symbol}{target_profit:,.1f}"
 
         st.markdown(f"""
         <div style="background-color:#1e293b55; padding:12px; border-radius:6px; border: 1px solid #475569; font-size:13px; line-height:1.6;">
             <div>📉 <b>현실적 눌림목 진입가:</b> <b style="color:#f43f5e; font-size:15px;">{txt_entry}</b></div>
             <div>🚨 <b>리스크 방어선 손절가:</b> <b style="color:#3b82f6; font-size:14px;">{txt_stop}</b></div>
-            <div>💧 <b>재무 대기 물타기 타점:</b> <b style="color:#eab308; font-size:14px;">{txt_pool}</b></div>
             <hr style="border:0; border-top:1px solid #475569; margin:10px 0;">
-            <div>🎯 <b>물타기 후 청산 목표 익절가:</b> <b style="color:#10b981; font-size:16px;">{txt_target}</b></div>
+            <div>🎯 <b>목표 익절가:</b> <b style="color:#10b981; font-size:16px;">{txt_target}</b></div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -2744,7 +2755,6 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
 import requests
 import re
 import threading
-from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 def contains_hangul(text):
     return bool(re.search('[ㄱ-ㅎㅏ-ㅣ가-힣]', text))
@@ -3545,7 +3555,6 @@ step_val = 1.0 if is_krw else 0.01
 entry_price = st.sidebar.number_input(f"🎯 나의 매수가 입력 ({'₩' if is_krw else '$'})", value=0.0, step=step_val, key="sb_entry_price_input")
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # ====================================================================
 # 🎯 [PRO QUANT 개편 3.0] 종목 습성(Profile) + 실시간 모멘텀 동적 결합 엔진
@@ -4007,7 +4016,6 @@ def stock_history_task(task_tuple, ctx_obj):
                 # 💡 [날짜별 차트 일자 정밀 시뮬레이션 - 텐베거 파동 추적 알고리즘]
                 max_so_far = entry_p
                 min_so_far = entry_p
-                water_count = 0
                 avg_price = entry_p
 
                 is_tp1_done = False
@@ -4021,6 +4029,8 @@ def stock_history_task(task_tuple, ctx_obj):
 
                 rem_qty = 1.0
                 realized_sum = 0.0
+
+                is_class_a = (ticker in ["000660.KS", "005930.KS", "373220.KS", "207940.KS", "068270.KS", "005380.KS", "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "LLY", "ASML"]) or (classify_stock_class(df_proc, ticker) == "Class A")
 
                 for _, b_row in after_df.iterrows():
                     b_high = float(b_row['High'])
@@ -4043,10 +4053,6 @@ def stock_history_task(task_tuple, ctx_obj):
 
                     b_dead = (b_close < b_ma200) and (b_ma20 < b_ma60 < b_ma200) and (init_curr_ret <= -6.0)
 
-                    if water_count == 0 and (init_min_ret <= -30.0 or init_curr_ret <= -30.0) and (b_close >= b_ma200 or b_close >= b_ma60) and (b_obv >= b_obv_ma) and not b_dead:
-                        water_count = 1
-                        avg_price = entry_p * 0.85
-
                     w_ret_curr = ((max_so_far - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
                     c_ret_curr = ((b_close - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
 
@@ -4061,30 +4067,35 @@ def stock_history_task(task_tuple, ctx_obj):
                         rem_qty -= 0.15
                         is_tp2_done = True
 
-                    # 🌟 [월가 퀀트 트레이너 총결의] 텐베거 대파동 수익 극대화 동적 트레일링 스탑
-                    # 파동이 클수록(50%+, 100%+) 고점 대비 -20%의 숨고르기 눌림목 공간을 제공하여 조기 털림 방지
+                    # 🌟 [월가 퀀트 트레이너 총결의] Class A vs Class B 이원화 트레일링 스탑 (+2.0%~9.9% 최고수익 시 +0.5% 방어선)
                     b_tstop = -999.0
-                    if w_ret_curr >= 100.0:
-                        b_tstop = w_ret_curr - 20.0 # +100% 이상 시 고점 대비 -20% 여유 제공 (조기 털림 방지)
-                    elif w_ret_curr >= 50.0:
-                        b_tstop = w_ret_curr - 15.0 # +50% 이상 시 고점 대비 -15% 여유
-                    elif w_ret_curr >= 20.0:
-                        b_tstop = w_ret_curr - 12.0 # +20% 이상 시 고점 대비 -12% 여유
-                    elif w_ret_curr >= 10.0:
-                        b_tstop = 5.0
+                    if is_class_a:
+                        # 🚀 Class A (초대형 대파동 주도주): 텐베거 대파동 상한선 없이 -35% 여유 방어선 제공
+                        if w_ret_curr >= 100.0: b_tstop = w_ret_curr - 35.0
+                        elif w_ret_curr >= 50.0: b_tstop = w_ret_curr - 25.0
+                        elif w_ret_curr >= 20.0: b_tstop = w_ret_curr - 15.0
+                        elif w_ret_curr >= 10.0: b_tstop = 5.0
+                        elif w_ret_curr >= 2.0: b_tstop = 0.5  # 🎯 +2%~+9.9% 최고 수익 올랐다가 하락 시 +0.5% 매도 방어선!
+                    else:
+                        # 🌿 Class B (고변동성 테마/제약바이오 - 삼천당제약 등): -15% 고점 대비 락인으로 폭락 차단
+                        if w_ret_curr >= 100.0: b_tstop = w_ret_curr - 20.0
+                        elif w_ret_curr >= 50.0: b_tstop = w_ret_curr - 15.0
+                        elif w_ret_curr >= 20.0: b_tstop = w_ret_curr - 12.0
+                        elif w_ret_curr >= 10.0: b_tstop = 5.0
+                        elif w_ret_curr >= 2.0: b_tstop = 0.5  # 🎯 +2%~+9.9% 최고 수익 올랐다가 하락 시 +0.5% 매도 방어선!
 
-                    if b_dead or c_ret_curr <= -6.0:
+                    if b_dead or c_ret_curr <= -7.0:
                         exact_exit_date_str = b_date_str
                         is_dead_trend = True
                         exit_price = b_close
-                        realized_sum = -6.0
+                        realized_sum = -7.0
                         rem_qty = 0.0
                         break
                     elif b_tstop > -900.0 and c_ret_curr <= b_tstop:
                         exact_exit_date_str = b_date_str
                         is_trailing_closed = True
                         exit_price = b_close
-                        realized_sum = round((1.0 - rem_qty) * realized_sum + rem_qty * b_tstop, 1)
+                        realized_sum = round(realized_sum + rem_qty * c_ret_curr, 1)
                         rem_qty = 0.0
                         break
                     # 🌟 텐베거 무제한 파동 수용: 상한선 캡(300%)을 없애고 고점 대비 -20% 트레일링으로 +700%+까지 보유
@@ -4546,8 +4557,11 @@ def bg_scan_worker_midterm(assets_dict):
 # ⚡ [과거 1년 초고속 전수 스캔] 볼린저밴드 상단 차단 제거 버전
 # ====================================================================
 def scan_all_historical_midterm_signals(assets_dict):
-    from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
-    ctx = get_script_run_ctx()
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        ctx = get_script_run_ctx()
+    except Exception:
+        ctx = None
 
     kr_items = {k: v for k, v in assets_dict["₩ 국내 주식"].items() if not any(x in k for x in ["등극주", "시총", "주요통화"])}
     us_items = {k: v for k, v in assets_dict["💲 미국 주식"].items() if not any(x in k for x in ["등극주", "시총", "주요통화"])}
@@ -4782,7 +4796,6 @@ with main_tab2:
             import sqlite3
             import numpy as np
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
             
             socket.setdefaulttimeout(2.5)
 
@@ -5180,9 +5193,9 @@ with main_tab3:
     <div style="background-color: #0f172a; padding: 14px 18px; border-radius: 8px; border: 1px solid #334155; margin: 10px 0 15px 0; font-size: 13px; line-height: 1.7;">
         <div style="font-weight: bold; color: #10b981; font-size: 14px; margin-bottom: 8px;">💡 6M~1Y 중장기 +100% 목표 초엄격 스캐닝 & 실전 매매 지침</div>
         <div style="color: #e2e8f0;">
-            • <b>1. 신규 매수 비중:</b> 포착 시 목표 자금의 <b>50%만 1차 진입</b>하며, 남은 <b>50%는 -30% 조정 시 1:1 동일금액 물타기용 예비금</b>으로 필수 보관합니다.<br>
+            • <b>1. 신규 매수 원칙:</b> 추천 포착 시 최적의 비중으로 진입합니다.<br>
             • <b>2. 쉬운 우량주 엄선법:</b> ①MTS/네이버 시총 상위 대형주 중 ➔ ②<b>주봉 차트가 우상향</b>하고 ➔ ③<b>일봉 20일선 근처까지 주가가 숨고르기(눌림)</b>를 할 때를 최우선으로 선택합니다.<br>
-            • <b>3. 상태별 핵심 대응:</b> <b>🛒신규매수</b>(50%진입) ➔ <b>🌊눌림</b>(대기) ➔ <b>💧물타기</b>(-30%시 1:1투입/평단-15%) ➔ <b>🎯익절</b>(+30%/+60% 분할) ➔ <b>🛡️청산/🚨손절</b>(트레일링/-7%기계적매도).
+            • <b>3. 상태별 핵심 대응:</b> <b>🛒신규매수</b> ➔ <b>🌊눌림</b>(대기) ➔ <b>🎯익절</b>(+2.0%~+9.9% 최고수익 후 하락 시 +0.5% 방어 / +30%+ 분할익절) ➔ <b>🛡️청산/🚨손절</b>(트레일링/-7% 기계적 매도).
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -5233,77 +5246,94 @@ with main_tab3:
         </div>
         """, unsafe_allow_html=True)
 
-        # 🌟 [일·주·월봉 3대 차트 정배열 & 1년 상승 가능성 최고주] 오늘의 정예 신규 추천주 Top 1, 2, 3선정
+        # 🌟 [사용자 요청] 1열 2개 컬럼 구조: 국내 1~3위 & 미국 1~3위 주도 섹터 1년 최고 상승 잠재주
         active_buys = df_display[df_display['상태'].str.contains('신규 매수|수익 진행중', na=False)]
         if active_buys.empty:
             active_buys = df_display.copy()
 
-        # 일·주·월봉 멀티 타임프레임 1년 상승 확신도(mtf_score) 순 정렬
-        if 'mtf_score' in active_buys.columns:
-            top3_candidates = active_buys.sort_values(by=['mtf_score'], ascending=False).head(3)
-        else:
-            top3_candidates = active_buys.sort_values(by=['최대 파동 수익률 (%)'], ascending=False).head(3)
+        sort_col = 'mtf_score' if 'mtf_score' in active_buys.columns else '최대 파동 수익률 (%)'
 
-        if not top3_candidates.empty:
-            st.markdown("##### 🔥 1년 내 최고 상승 잠재력 Top 1·2·3 정예 추천주 (일·주·월봉 3대 차트 종합 리포트)")
-            cols_top3 = st.columns(min(3, len(top3_candidates)))
-            
-            medals = ["🥇 1위 최정예 추천주", "🥈 2위 정예 추천주", "🥉 3위 정예 추천주"]
-            rank_colors = ["#f59e0b", "#94a3b8", "#b45309"]
-            
-            for idx, (_, row_item) in enumerate(top3_candidates.iterrows()):
-                if idx >= 3: break
+        kr_active = active_buys[active_buys['시장'] == '국내'].sort_values(by=[sort_col], ascending=False).head(3)
+        us_active = active_buys[active_buys['시장'] == '미국'].sort_values(by=[sort_col], ascending=False).head(3)
+
+        if kr_active.empty: kr_active = df_display[df_display['시장'] == '국내'].head(3)
+        if us_active.empty: us_active = df_display[df_display['시장'] == '미국'].head(3)
+
+        st.markdown("##### 🔥 1년 내 주도 섹터 최고 상승 잠재주 (국내 1~3위 / 미국 1~3위)")
+        col_kr_box, col_us_box = st.columns(2)
+
+        medals = ["🥇 1위", "🥈 2위", "🥉 3위"]
+        rank_colors = ["#f59e0b", "#94a3b8", "#b45309"]
+
+        # 🇰🇷 국내 1~3위 박스
+        with col_kr_box:
+            st.markdown("""
+            <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
+                <b style="color: #38bdf8; font-size: 15px;">🇰🇷 국내 주도 섹터 Top 1·2·3 정예 추천주</b>
+            </div>
+            """, unsafe_allow_html=True)
+            for idx, (_, row_item) in enumerate(kr_active.iterrows()):
                 s_name = row_item['종목명']
-                s_mkt  = row_item['시장']
                 s_ent  = row_item['추천 진입가']
                 s_target_1y = row_item.get('1년 목표 수익률 (%)', row_item['최대 파동 수익률 (%)'] * 1.35 + 15.0)
-                
-                with cols_top3[idx]:
-                    st.markdown(f"""
-                    <div style="background-color: #0f172a; padding: 14px; border-radius: 10px; border: 2px solid {rank_colors[idx]}; margin-bottom: 15px;">
-                        <div style="font-weight: bold; color: {rank_colors[idx]}; font-size: 14px; margin-bottom: 6px;">{medals[idx]} (1년 최고 상승 잠재주)</div>
-                        <div style="font-size: 16px; color: #ffffff; font-weight: bold; margin-bottom: 4px;">{s_name} <span style="font-size: 12px; color: #94a3b8;">({s_mkt})</span></div>
-                        <div style="font-size: 13px; color: #cbd5e1; margin-bottom: 6px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
-                        <div style="font-size: 14px; color: #10b981; font-weight: bold; margin-bottom: 8px;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
-                        <div style="font-size: 11px; color: #e2e8f0; background-color: #1e293b; padding: 10px; border-radius: 6px; line-height: 1.6;">
-                            <b>📐 일·주·월봉 3대 차트 결합 리포트:</b><br>
-                            • <b>일봉(Daily):</b> 20일선 정교한 눌림목 반등 + 세력 OBV 수급 지지<br>
-                            • <b>주봉(Weekly):</b> 20주선/50주선 정배열 우상향 상승 파동 형성<br>
-                            • <b>월봉(Monthly):</b> 20월선 돌파 턴어라운드 대세 상승 수렴<br>
-                            📰 <b>최근 호재 & 관련 섹터 동향:</b><br>
-                            - 1W/1M/6M/1Y 주도 섹터 자금 대량 유입 및 우량 실적 모멘텀 지속!
-                        </div>
+                st.markdown(f"""
+                <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 6px; border: 1px solid {rank_colors[idx]}; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name}</span>
+                        <span style="font-size: 15px; color: #ffffff; font-weight: bold;"></span>
                     </div>
-                    """, unsafe_allow_html=True)
+                    <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 3px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
+                    <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-        # 🛡️ [사용자 요청] 익절 방어선 구조 안내 박스
-        st.markdown("""
-        <div style="background-color: #0f172a; border: 1px solid #3b82f6; padding: 16px; border-radius: 10px; margin-bottom: 20px; color: #f8fafc;">
-            <div style="font-size: 15px; font-weight: bold; color: #60a5fa; margin-bottom: 10px;">
-                🛡️ 월가 퀀트 헤지펀드 익절 방어선 매매 규칙 가이드
+        # 🇺🇸 미국 1~3위 박스
+        with col_us_box:
+            st.markdown("""
+            <div style="background-color: #1e293b; padding: 12px 16px; border-radius: 10px 10px 0 0; border: 1px solid #334155; border-bottom: none;">
+                <b style="color: #f43f5e; font-size: 15px;">🇺🇸 미국 주도 섹터 Top 1·2·3 정예 추천주</b>
             </div>
-            
-            <div style="font-size: 12px; line-height: 1.7; color: #cbd5e1;">
-                <p style="margin-bottom: 10px;">
-                    <b>📌 1. 삼천당제약처럼 며칠 사이에 급락하는 종목 방어 원리</b><br>
-                    바이오나 고변동성 주도주가 고점 달성 후 며칠 만에 급락할 때는 <b>'고점 대비 동적 트레일링 방어선'</b>이 자동 작동합니다. 주가가 최고점을 경신할 때마다 방어선이 고점 바로 밑까지 바짝 따라붙기 때문에, 갑작스러운 급락이 나오더라도 <b>확보한 100%+ 이상의 수익을 안전하게 락인(Lock-in)하고 즉시 자동 익절 청산</b>됩니다.
-                </p>
-                
-                <p style="margin-bottom: 10px;">
-                    <b>📌 2. 수익 구간별 익절 방어선 상세 기준</b><br>
-                    • <b>[수익률 +10% ~ +20%]</b> ➔ <b>+5.0% 익절 방어선 확정</b> (최소 +5% 수익 보증 및 본절 방어)<br>
-                    • <b>[수익률 +20% ~ +50%]</b> ➔ <b>최고점 대비 -12.0% 동적 방어선</b> (단기 상승 파동 보존)<br>
-                    • <b>[수익률 +50% ~ +100%]</b> ➔ <b>최고점 대비 -15.0% 동적 방어선</b> (중기 대시세 파동 안전망)<br>
-                    • <b>[수익률 +100% 이상 (대파동)]</b> ➔ <b>최고점 대비 -20.0% 여유 방어선</b> (숨고르기 털림 방지 및 +300%~+700% 무제한 수확)
-                </p>
-                
-                <p style="margin: 0;">
-                    <b>📌 3. 1차 분할 익절 & 85% 메인 수량 온존 전략</b><br>
-                    +30% 도달 시 <b>15% 수량만 1차 익절</b>하여 투자 원금을 100% 안전하게 회수하고, <b>남은 85% 메인 수량</b>은 동적 방어선이 이탈하지 않는 한 텐베거 대파동 마감 시점까지 끝까지 우상향 홀딩합니다.
-                </p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+            for idx, (_, row_item) in enumerate(us_active.iterrows()):
+                s_name = row_item['종목명']
+                s_ent  = row_item['추천 진입가']
+                s_target_1y = row_item.get('1년 목표 수익률 (%)', row_item['최대 파동 수익률 (%)'] * 1.35 + 15.0)
+                st.markdown(f"""
+                <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 6px; border: 1px solid {rank_colors[idx]}; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name}</span>
+                        <span style="font-size: 15px; color: #ffffff; font-weight: bold;"></span>
+                    </div>
+                    <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 3px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
+                    <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        # 🛡️ [사용자 요청] 익절 방어선 구조 안내 박스 (0들여쓰기로 코드블록 변환 방지)
+        info_box_html = """<div style="background-color: #0f172a; border: 2px solid #3b82f6; padding: 18px; border-radius: 12px; margin-bottom: 20px; color: #f8fafc;">
+<div style="font-size: 16px; font-weight: bold; color: #60a5fa; margin-bottom: 12px;">
+🛡️ 월가 퀀트 헤지펀드 익절 방어선 매매 규칙 가이드
+</div>
+<div style="font-size: 13px; line-height: 1.8; color: #cbd5e1;">
+<p style="margin-bottom: 12px;">
+<b>📌 1. 삼천당제약처럼 며칠 사이에 급락하는 종목 방어 원리</b><br>
+바이오나 고변동성 주도주가 고점 달성 후 며칠 만에 급락할 때는 <b>'고점 대비 동적 트레일링 방어선'</b>이 자동 작동합니다. 주가가 최고점을 경신할 때마다 방어선이 고점 바로 밑까지 바짝 따라붙기 때문에, 갑작스러운 급락이 나오더라도 <b>확보한 100%+ 이상의 수익을 안전하게 락인(Lock-in)하고 즉시 자동 익절 청산</b>됩니다.
+</p>
+<p style="margin-bottom: 12px;">
+<b>📌 2. 수익 구간별 익절 방어선 상세 기준</b><br>
+• <b>[최고 수익률 +2.0% ~ +9.9%]</b> ➔ <b>+0.5% 익절 방어선 확정</b> (원금 보존 및 최소 +0.5% 수익 확정)<br>
+• <b>[수익률 +10% ~ +20%]</b> ➔ <b>+5.0% 익절 방어선 확정</b> (최소 +5% 수익 보증 및 본절 방어)<br>
+• <b>[수익률 +20% ~ +50%]</b> ➔ <b>최고점 대비 -12.0% 동적 방어선</b> (단기 상승 파동 보존)<br>
+• <b>[수익률 +50% ~ +100%]</b> ➔ <b>최고점 대비 -15.0% 동적 방어선</b> (중기 대시세 파동 안전망)<br>
+• <b>[수익률 +100% 이상 (대파동)]</b> ➔ <b>최고점 대비 -20.0% 여유 방어선</b> (Class A 대파동 완주 및 무제한 수확)
+</p>
+<p style="margin: 0;">
+<b>📌 3. 1차 분할 익절 & 85% 메인 수량 온존 전략</b><br>
++30% 도달 시 <b>15% 수량만 1차 익절</b>하여 투자 원금을 100% 안전하게 회수하고, <b>남은 85% 메인 수량</b>은 동적 방어선이 이탈하지 않는 한 텐베거 대파동 마감 시점까지 끝까지 우상향 홀딩합니다.
+</p>
+</div>
+</div>"""
+        st.markdown(info_box_html, unsafe_allow_html=True)
 
         cols_to_show = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "평단가", "현재가", "현재/최종 수익률 (%)", "최대 파동 수익률 (%)", "상태"] if '평단가' in df_display.columns else ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "현재 수익률 (%)", "최대 파동 수익률 (%)", "상태"]
         table_df = df_display[cols_to_show]
