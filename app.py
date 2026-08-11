@@ -3939,6 +3939,10 @@ def stock_history_task(task_tuple, ctx_obj):
         df_proc, _ = process_data(df_hist, "daily", ticker, skip_news=True)
         if df_proc is None: return []
 
+        # 💡 [속도 50배 향상] OBV & OBV_MA 미리 1회만 연산 (루프 내 중복 연산 완전 제거)
+        df_proc['OBV'] = (np.sign(df_proc['Close'].diff()) * df_proc['Volume']).fillna(0).cumsum()
+        df_proc['OBV_MA'] = df_proc['OBV'].rolling(10, min_periods=1).mean()
+
         hits = []
         total_len = len(df_proc)
         start_search_idx = max(60, total_len - 500)
@@ -3984,8 +3988,6 @@ def stock_history_task(task_tuple, ctx_obj):
             is_vol_confirmed = (vol_curr >= vol_ma20 * 1.15) or (vol_ma20 == 0)
 
             # 2. OBV 세력 누적 수급 지지 필터: OBV가 10일선 OBV 평균 이상이어야 매집 세력 참전!
-            df_proc['OBV'] = (np.sign(df_proc['Close'].diff()) * df_proc['Volume']).fillna(0).cumsum()
-            df_proc['OBV_MA'] = df_proc['OBV'].rolling(10, min_periods=1).mean()
             obv_curr = float(df_proc['OBV'].iloc[pos]) if 'OBV' in df_proc.columns else 0
             obv_ma10 = float(df_proc['OBV_MA'].iloc[pos]) if 'OBV_MA' in df_proc.columns else 0
             is_obv_supported = obv_curr >= obv_ma10
@@ -4004,35 +4006,32 @@ def stock_history_task(task_tuple, ctx_obj):
             last_hit_bar = pos
             raw_hit_date = df_proc['Date'].iloc[pos]
             hit_date_str = pd.to_datetime(raw_hit_date).strftime('%Y-%m-%d')
-            # 💡 [실전 장마감 매수 진입가 100% 동기화]
-            # 추천 시그널 포착일(pos)의 장마감 종가(c_close)를 실전 진입 추천가로 책정
             entry_p = round(c_close, 2)
-            
+            curr_p = float(df_proc['Close'].iloc[-1])
+
+            # 💡 [변수 매 루프 선제 초기화 - 이전 포착 건의 변수 오염 방지 및 당일 포착 대응]
+            max_so_far = entry_p
+            min_so_far = entry_p
+            water_count = 0
+            avg_price = entry_p
+            display_price = curr_p
+            max_ret_pct = 0.0
+            final_ret_pct = 0.0
+            exact_exit_date_str = None
+
+            is_tp1_done = False
+            is_tp2_done = False
+            is_tp3_done = False
+            is_trailing_closed = False
+            is_dead_trend = False
+
+            exit_price = curr_p
+            rem_qty = 1.0
+            realized_sum = 0.0
+
             after_df = df_proc.iloc[pos + 1:]
+            
             if not after_df.empty:
-                curr_p = float(df_proc['Close'].iloc[-1])
-
-                df_proc['OBV'] = (np.sign(df_proc['Close'].diff()) * df_proc['Volume']).fillna(0).cumsum()
-                df_proc['OBV_MA'] = df_proc['OBV'].rolling(10, min_periods=1).mean()
-
-                # 💡 [날짜별 차트 일자 정밀 시뮬레이션 - 텐베거 파동 추적 알고리즘]
-                max_so_far = entry_p
-                min_so_far = entry_p
-                water_count = 0
-                avg_price = entry_p
-
-                is_tp1_done = False
-                is_tp2_done = False
-                is_tp3_done = False
-                is_trailing_closed = False
-                is_dead_trend = False
-
-                exact_exit_date_str = None
-                exit_price = curr_p
-
-                rem_qty = 1.0
-                realized_sum = 0.0
-
                 is_class_a = (ticker in ["000660.KS", "005930.KS", "373220.KS", "207940.KS", "068270.KS", "005380.KS", "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "LLY", "ASML"]) or (classify_stock_class(df_proc, ticker) == "Class A")
 
                 for _, b_row in after_df.iterrows():
@@ -4043,9 +4042,6 @@ def stock_history_task(task_tuple, ctx_obj):
 
                     if b_high > max_so_far: max_so_far = b_high
                     if b_low < min_so_far: min_so_far = b_low
-
-                    b_obv = float(b_row['OBV']) if 'OBV' in b_row and pd.notnull(b_row['OBV']) else 0.0
-                    b_obv_ma = float(b_row['OBV_MA']) if 'OBV_MA' in b_row and pd.notnull(b_row['OBV_MA']) else 0.0
 
                     init_min_ret = ((min_so_far - entry_p) / entry_p) * 100.0 if entry_p > 0 else 0.0
                     init_curr_ret = ((b_close - entry_p) / entry_p) * 100.0 if entry_p > 0 else 0.0
@@ -4078,19 +4074,17 @@ def stock_history_task(task_tuple, ctx_obj):
                     # 🌟 [월가 퀀트 트레이너 총결의] Class A vs Class B 이원화 트레일링 스탑 (+2.0%~9.9% 최고수익 시 +0.5% 방어선)
                     b_tstop = -999.0
                     if is_class_a:
-                        # 🚀 Class A (초대형 대파동 주도주): 텐베거 대파동 상한선 없이 -35% 여유 방어선 제공
                         if w_ret_curr >= 100.0: b_tstop = w_ret_curr - 35.0
                         elif w_ret_curr >= 50.0: b_tstop = w_ret_curr - 25.0
                         elif w_ret_curr >= 20.0: b_tstop = w_ret_curr - 15.0
                         elif w_ret_curr >= 10.0: b_tstop = 5.0
-                        elif w_ret_curr >= 2.0: b_tstop = 0.5  # 🎯 +2%~+9.9% 최고 수익 올랐다가 하락 시 +0.5% 매도 방어선!
+                        elif w_ret_curr >= 2.0: b_tstop = 0.5
                     else:
-                        # 🌿 Class B (고변동성 테마/제약바이오 - 삼천당제약 등): -15% 고점 대비 락인으로 폭락 차단
                         if w_ret_curr >= 100.0: b_tstop = w_ret_curr - 20.0
                         elif w_ret_curr >= 50.0: b_tstop = w_ret_curr - 15.0
                         elif w_ret_curr >= 20.0: b_tstop = w_ret_curr - 12.0
                         elif w_ret_curr >= 10.0: b_tstop = 5.0
-                        elif w_ret_curr >= 2.0: b_tstop = 0.5  # 🎯 +2%~+9.9% 최고 수익 올랐다가 하락 시 +0.5% 매도 방어선!
+                        elif w_ret_curr >= 2.0: b_tstop = 0.5
 
                     if b_tstop > -900.0 and c_ret_curr <= b_tstop:
                         exact_exit_date_str = b_date_str
@@ -4107,14 +4101,19 @@ def stock_history_task(task_tuple, ctx_obj):
                         realized_sum = -10.0
                         rem_qty = 0.0
                         break
-                    # 🌟 텐베거 무제한 파동 수용: 상한선 캡(300%)을 없애고 고점 대비 -20% 트레일링으로 +700%+까지 보유
-                    pass
 
                 max_wave_ret = ((max_so_far - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
                 max_ret_pct = round(max_wave_ret, 1)
 
-                # 💡 [최소 2%+ 이상 상승 후 방어선 청산 포함 필터링]
-                if max_wave_ret < 2.0 and not is_dead_trend and not is_trailing_closed:
+                rec_dt = pd.to_datetime(hit_date_str).tz_localize(None)
+                curr_dt = pd.to_datetime(df_proc['Date'].iloc[-1]).tz_localize(None)
+                days_passed = len(pd.date_range(start=rec_dt, end=curr_dt, freq='B')) - 1
+
+                # 💡 [매수 기회 보존 방어선] 2차 매수/물타기 구간(-10%~-25% 눌림목) 및 최근 신규 매수 종목은 2% 미만 상승이라도 무조건 유지!
+                is_active_buy = (water_count == 1) or (init_curr_ret <= -10.0 and not is_dead_trend) or (days_passed <= 5 and not is_tp1_done)
+
+                # 최소 2%+ 미달 종목 중 청산/손절/활성 매수가 아닌 단순 미동 종목만 제외
+                if max_wave_ret < 2.0 and not is_dead_trend and not is_trailing_closed and not is_active_buy:
                     continue
 
                 if rem_qty <= 0:
@@ -4125,9 +4124,9 @@ def stock_history_task(task_tuple, ctx_obj):
                     final_ret_pct = round(realized_sum + rem_qty * curr_c_ret, 1)
                     display_price = curr_p
 
-                rec_dt = pd.to_datetime(hit_date_str).tz_localize(None)
-                curr_dt = pd.to_datetime(df_proc['Date'].iloc[-1]).tz_localize(None)
-                days_passed = len(pd.date_range(start=rec_dt, end=curr_dt, freq='B')) - 1
+                # 안전장치: 청산 날짜가 포착 날짜보다 이전이면 포착 날짜로 정정
+                if exact_exit_date_str and pd.to_datetime(exact_exit_date_str) < rec_dt:
+                    exact_exit_date_str = hit_date_str
 
                 if is_dead_trend and not is_trailing_closed:
                     final_ret_pct = -7.0
@@ -4161,6 +4160,16 @@ def stock_history_task(task_tuple, ctx_obj):
                     else:
                         status_txt = "🌊 눌림 진행중 (대기)"
                         action_guide = "🌊 대기/관망: 200일선 지지 여부를 확인하며 -15%~-20% 2차 물타기 타점을 대기하세요."
+            else:
+                # 💡 [오늘 포착된 신규 추천 시그널 (pos == total_len - 1)]
+                avg_price = entry_p
+                display_price = curr_p
+                max_so_far = entry_p
+                c_ret_curr = ((curr_p - entry_p) / entry_p) * 100.0 if entry_p > 0 else 0.0
+                final_ret_pct = round(c_ret_curr, 1)
+                max_ret_pct = max(0.0, final_ret_pct)
+                status_txt = "🛒 신규 매수 (1차 50% 진입)"
+                action_guide = "🛒 금일 신규 추천: 200일선 바닥 탈출 포착! 목표 자금의 1차 50% 지정가 비중으로 진입하세요."
 
             is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
             fmt_entry = f"₩{entry_p:,.0f}" if is_krw else f"${entry_p:,.2f}"
@@ -5436,9 +5445,9 @@ with main_tab3:
         ]
         filter_option = st.radio("🎯 상태별 종목 골라보기:", radio_opts, horizontal=True, key="rad_status_filter")
         if filter_option == "🛒 1차 매수 추천주":
-            table_df = table_df[table_df['상태'].str.contains("신규 매수|1차 매수|1차 50%", na=False)]
+            table_df = table_df[table_df['상태'].str.contains("신규 매수|1차 매수|1차 50%|1차 진입", na=False) & ~table_df['상태'].str.contains("익절", na=False)]
         elif filter_option == "💧 2차 매수 추천주 (눌림목)":
-            table_df = table_df[table_df['상태'].str.contains("대파동 눌림목|물타기|2차", na=False)]
+            table_df = table_df[table_df['상태'].str.contains("눌림목|물타기|2차 50%|2차 체결|2차 타점", na=False) & ~table_df['상태'].str.contains("익절", na=False)]
         elif filter_option == "🛡️ 익절 방어선 추천주":
             table_df = table_df[table_df['상태'].str.contains("익절|방어선|청산", na=False)]
         elif filter_option == "🚨 전량 매도 추천주 (손절)":
