@@ -3856,11 +3856,7 @@ def calculate_smart_entry_price(df_proc, ai_data):
     macd_hist_prev = float(df_proc['MACD_Hist'].iloc[-2]) if 'MACD_Hist' in df_proc.columns and len(df_proc) >= 2 else macd_hist_curr
     had_squeeze = df_proc['Squeeze_On'].iloc[-5:-1].any() if 'Squeeze_On' in df_proc.columns and len(df_proc) >= 5 else False
 
-    # 🛡️ [고점 꺾임 폭락 음봉 차단 방어 필터]
-    recent_20_high = float(df_proc['High'].tail(20).max())
-    if (c_close < recent_20_high * 0.94) and (c_close < c_open):
-        return None, 0.0, 0.0, ""
-
+    # 캔들 형태 및 이격도
     body = abs(c_close - c_open)
     upper_shadow = c_high - max(c_open, c_close)
     is_fading = (macd_hist_curr < macd_hist_prev) or (c_close < c_open) or (upper_shadow > body * 0.4)
@@ -4348,24 +4344,18 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
             if not (is_bottom_reversal or is_class_a_staircase_reentry or is_secular_megacap_trend): continue
 
-            # 🛡️ [고점 꺾임 폭락 & 20/60일선 공중부양 음봉 트랩 차단 3대 강철 방어 필터]
-            # 1. 최근 20일 고점 대비 -6.0% 이상 꺾여 내리는 하락 음봉 차단
-            recent_20_high = float(df_proc['High'].iloc[max(0, pos-20):pos+1].max())
-            is_peak_falling = (c_close < recent_20_high * 0.94) and (c_close < c_open)
-
-            # 2. 20일선/60일선 지지선 정교한 터치 안착 필수 (공중에 어중간하게 뜬 봉 무조건 차단)
-            is_ma_touch = (c_low_val <= ma20 * 1.020) or (c_low_val <= ma60 * 1.020)
-
-            # 3. 윗꼬리 트랩 및 과열 꺾임 음봉 차단
+            # 🛡️ [가짜 돌파 & 수직 꺾임 폭락 차단 방어 필터]
             c_high = float(latest['High'])
             c_low  = float(latest['Low'])
             c_open = float(latest['Open'])
             candle_range = c_high - c_low
             upper_shadow = c_high - max(c_close, c_open)
-            is_shadow_trap = (upper_shadow / candle_range > 0.38) if candle_range > 0 else False
-            is_vertical_drop = (disp_20 > 108.0) and (c_close < c_open) and (vol_curr > vol_ma20 * 1.2)
+            is_shadow_trap = (upper_shadow / candle_range > 0.40) if candle_range > 0 else False
 
-            # 🧱 상방 이평선 저항벽 5% 미만 차단
+            # 수직 꺾임 과열(이격도 110% 초과 + 거래량 터진 음봉) 차단
+            is_vertical_drop = (disp_20 > 110.0) and (c_close < c_open) and (vol_curr > vol_ma20 * 1.3)
+
+            # 🧱 [상방 이평선 저항벽 5% 미만 무조건 차단 가드레일] 캔들 위 5% 이내에 60, 120, 200일선 저항이 막고 있으면 100% 무조건 차단!
             ma60_val  = float(latest.get('MA_60', c_close))
             ma120_val = float(latest.get('MA_120', c_close))
             ma200_val = float(latest.get('MA_200', c_close))
@@ -4376,10 +4366,10 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 if ((nearest_upper - c_close) / c_close) * 100.0 < 5.0:
                     is_upper_ma_blocked = True
 
-            # 🛡️ 60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 검증
+            # 🛡️ [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 검증]
             is_valid_breakout, _ = verify_ma_breakout_master_rules(df_proc, pos=pos)
 
-            if is_peak_falling or not is_ma_touch or is_shadow_trap or is_vertical_drop or not is_obv_supported or is_upper_ma_blocked or not is_valid_breakout:
+            if is_shadow_trap or is_vertical_drop or not is_obv_supported or is_upper_ma_blocked or not is_valid_breakout:
                 continue
 
             last_hit_bar = pos
