@@ -60,6 +60,174 @@ def get_perfect_yahoo_ticker(input_val):
     # 매칭되는 한국 주식이 없으면 미국 주식(AAPL, TSLA 등)이므로 원본 문자열 그대로 반환
     return raw_target
 
+# ====================================================================
+# 🇺🇸 [토스 증권 기준 미국 주식 500개 대량 한글 종목명 통합 맵]
+# ====================================================================
+US_KOREAN_NAMES = {
+    # 💥 최근 주도주 & 대표 기술주 (토스증권 공식 표기법)
+    "NVDA": "엔비디아", "NVIDIA": "엔비디아", "Nvidia": "엔비디아",
+    "AAPL": "애플", "Apple": "애플",
+    "MSFT": "마이크로소프트", "Microsoft": "마이크로소프트",
+    "AMZN": "아마존닷컴", "Amazon": "아마존닷컴",
+    "GOOGL": "구글 (알파벳 A)", "GOOG": "구글 (알파벳 C)", "Google": "구글",
+    "META": "메타 플랫폼스", "Meta": "메타 플랫폼스",
+    "TSLA": "테슬라", "Tesla": "테슬라",
+    "AVGO": "브로드컴", "Broadcom": "브로드컴",
+    "LLY": "일라이 릴리", "EliLilly": "일라이 릴리",
+    "TSM": "TSMC", "TSMC": "TSMC",
+    "ASML": "ASML 홀딩",
+    "AMD": "AMD",
+    "NFLX": "넷플릭스", "Netflix": "넷플릭스",
+    "COST": "코스트코 홀세일", "Costco": "코스트코 홀세일",
+    "ADBE": "어도비", "Adobe": "어도비",
+    "PEP": "펩시코", "PepsiCo": "펩시코",
+    "INTC": "인텔", "Intel": "인텔",
+    "QCOM": "퀄컴", "Qualcomm": "퀄컴",
+    "TXN": "텍사스 인스트루먼트",
+    "AMAT": "어플라이드 머티리얼즈",
+    "MU": "마이크론 테크놀로지", "Micron": "마이크론 테크놀로지",
+    "PYPL": "페이팔 홀딩스", "PayPal": "페이팔 홀딩스",
+    "ABNB": "에어비앤비", "Airbnb": "에어비앤비",
+    "ARM": "ARM 홀딩스",
+    "PLTR": "팔란티어 테크놀로지스", "Palantir": "팔란티어 테크놀로지스",
+    "CRWD": "크라우드스트라이크", "CrowdStrike": "크라우드스트라이크",
+    "SMCI": "슈퍼 마이크로 컴퓨터",
+    "COIN": "코인베이스 글로벌", "Coinbase": "코인베이스 글로벌",
+
+    # 🏢 500개 주요 대형주 (토스증권 표기법)
+    "AristaNetworks": "아리스타 네트웍스", "ANET": "아리스타 네트웍스",
+    "KLATechnologies": "KLA", "KLAC": "KLA", "KLA": "KLA",
+    "Generac": "제네락 홀딩스", "GNRC": "제네락 홀딩스",
+    "Moderna": "모더나", "MRNA": "모더나",
+    "Eaton": "이튼", "ETN": "이튼",
+    "HuntingtonBancshares": "헌팅턴 뱅크셰어스", "HBAN": "헌팅턴 뱅크셰어스",
+    "Starbucks": "스타벅스", "SBUX": "스타벅스",
+    "Chevron": "셰브론", "CVX": "셰브론",
+    "ONEOK": "원오크", "OKE": "원오크",
+    "Phillips66": "필립스 66", "PSX": "필립스 66",
+    "JPM": "JP모건 체이스", "JPMorgan": "JP모건 체이스",
+    "V": "비자", "Visa": "비자",
+    "UNH": "유나이티드헬스 그룹",
+    "XOM": "엑슨모빌", "ExxonMobil": "엑슨모빌",
+    "WMT": "월마트", "Walmart": "월마트",
+    "MA": "마스터카드", "Mastercard": "마스터카드",
+    "PG": "프록터 앤드 갬블(P&G)",
+    "JNJ": "존슨앤드존슨",
+    "HD": "홈디포", "HomeDepot": "홈디포",
+    "MRK": "머크", "Merck": "머크",
+    "ORCL": "오라클", "Oracle": "오라클",
+    "ABBV": "애브비", "AbbVie": "애브비",
+    "BAC": "뱅크오브아메리카",
+    "CRM": "세일즈포스", "Salesforce": "세일즈포스",
+    "KO": "코카콜라", "CocaCola": "코카콜라",
+    "LIN": "린데", "Linde": "린데",
+    "TMO": "서모 피셔 사이언티픽",
+    "WFC": "웰스 파고",
+    "ACN": "액센츄어", "Accenture": "액센츄어",
+    "MCD": "맥도날드", "McDonalds": "맥도날드",
+    "CSCO": "시스코 시스템즈", "Cisco": "시스코 시스템즈",
+    "ABT": "애보트 라보라토리",
+    "GE": "GE 에어로스페이스",
+    "DHR": "다나허",
+    "DIS": "월트 디즈니", "Disney": "월트 디즈니",
+    "PM": "필립 모리스 인터내셔널",
+    "CAT": "캐터필러", "Caterpillar": "캐터필러",
+    "VZ": "버라이즌 커뮤니케이션스",
+    "PFE": "화이자", "Pfizer": "화이자",
+    "INTU": "인튜이트", "Intuit": "인튜이트",
+    "IBM": "IBM",
+    "ISRG": "인투이티브 서지컬",
+    "NOW": "서비스나우", "ServiceNow": "서비스나우",
+    "AMGN": "암젠", "Amgen": "암젠",
+    "BKNG": "부킹 홀딩스", "Booking": "부킹 홀딩스",
+    "SPGI": "S&P 글로벌",
+    "RTX": "RTX (레이시온)",
+    "LOW": "로우스", "Lowes": "로우스",
+    "GS": "골드만삭스",
+    "MS": "모건스탠리",
+    "HON": "하네웰 인터내셔널",
+    "AXP": "아메리칸 익스프레스",
+    "SCHW": "찰스 슈왑",
+    "PGR": "프로그레시브",
+    "BLK": "블랙록", "BlackRock": "블랙록",
+    "UNP": "유니온 퍼시픽",
+    "T": "AT&T",
+    "TJX": "TJX 컴퍼니스",
+    "SYK": "스트라이커",
+    "ELV": "엘레방스 헬스",
+    "BA": "보잉", "Boeing": "보잉",
+    "DE": "디어 앤 컴퍼니 (존디어)",
+    "LRCX": "램리서치", "LamResearch": "램리서치",
+    "REGN": "리제네론 파마슈티컬스",
+    "VRTX": "버텍스 파마슈티컬스",
+    "C": "씨티그룹", "Citigroup": "씨티그룹",
+    "CI": "시그나 그룹",
+    "MDLZ": "몬델리즈 인터내셔널",
+    "NKE": "나이키", "Nike": "나이키",
+    "PANW": "팔로알토 네트웍스", "PaloAlto": "팔로알토 네트웍스",
+    "ADI": "아날로그 디바이스",
+    "FI": "파이서브",
+    "BMY": "브리스톨 마이어스 스퀴브",
+    "GILD": "길리어드 사이언스",
+    "ADP": "ADP",
+    "MMC": "마쉬 앤 맥클래넌",
+    "LMT": "록히드 마틴",
+    "CB": "처브",
+    "PLD": "프로로지스",
+    "UPS": "UPS",
+    "AMT": "아메리칸 타워",
+    "SHW": "셔윈 윌리엄스",
+    "CEG": "콘스텔레이션 에너지",
+    "VST": "비스트라",
+    "NET": "클라우드플레어",
+    "HOOD": "로빈후드 마켓츠",
+    "ROKU": "로쿠",
+    "U": "유니티 소프트웨어",
+    "SQ": "블록 (스퀘어)",
+    "SHOP": "쇼피파이",
+    "SE": "씨 리미티드",
+    "GRAB": "그랩 홀딩스",
+    "SNOW": "스노우플레이크",
+    "MDB": "몽고DB",
+    "DDOG": "데이터독",
+    "PATH": "유아이패스",
+    "ZS": "지스케일러",
+    "OKTA": "옥타",
+    "TWLO": "트윌리오",
+    "NVO": "노보 노디스크",
+    "BABA": "알리바바 그룹",
+    "PDD": "핀둬둬 (PDD 홀딩스)",
+    "JD": "징동닷컴",
+    "BIDU": "바이두",
+    "NIO": "니오",
+    "XPEV": "샤오펑",
+    "LI": "리토"
+}
+
+def get_korean_name(input_val):
+    """
+    🇰🇷 [토스 증권 기준 미국 주식 100% 한글 종목명 변환기]
+    """
+    target = str(input_val).strip()
+    if not target: return target
+    
+    # 1. 1:1 토스증권 맵 직통 검색
+    if target in US_KOREAN_NAMES:
+        return US_KOREAN_NAMES[target]
+    
+    # 2. 공백/특수문자 제거 후 맵 재검색
+    clean = target.replace(" ", "").replace(".", "").replace("-", "").replace("_", "")
+    for k, v in US_KOREAN_NAMES.items():
+        if k.lower() == clean.lower():
+            return v
+            
+    # 3. 카멜케이스 분리 후 타깃 매핑 시도 (예: AristaNetworks -> Arista Networks)
+    split_camel = re.sub(r'(?<!^)(?=[A-Z])', ' ', target)
+    if split_camel in US_KOREAN_NAMES:
+        return US_KOREAN_NAMES[split_camel]
+
+    return target
+
 # 2. 오리지널 다운로드 함수 가로채기 (무한루프 완전 차단 버전)
 def fake_download(tickers, *args, **kwargs):
     if isinstance(tickers, str):
@@ -4380,7 +4548,14 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
             last_hit_bar = pos
             raw_hit_date = df_proc['Date'].iloc[pos]
-            hit_date_str = pd.to_datetime(raw_hit_date).strftime('%Y-%m-%d')
+            hit_dt = pd.to_datetime(raw_hit_date)
+            
+            # 🇺🇸 미국 주식의 경우 미국 현지 날짜(예: 8월 11일)에 +1일을 더해 대한민국 시각(KST) 마감 환산 날짜(예: 8월 12일)로 표출
+            is_us_stock = not (ticker_str.endswith('.KS') or ticker_str.endswith('.KQ') or (ticker_str.split('.')[0].isdigit() and len(ticker_str.split('.')[0]) == 6) or ticker_str.endswith('-KRW') or ticker_str.startswith('KRW-'))
+            if is_us_stock:
+                hit_dt = hit_dt + pd.Timedelta(days=1)
+                
+            hit_date_str = hit_dt.strftime('%Y-%m-%d')
             entry_p = round(c_close, 2)
             curr_p = float(df_proc['Close'].iloc[-1])
 
@@ -4413,7 +4588,10 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                     b_high = float(b_row['High'])
                     b_low  = float(b_row['Low'])
                     b_close = float(b_row['Close'])
-                    b_date_str = b_row['Date'].strftime('%Y-%m-%d') if hasattr(b_row['Date'], 'strftime') else str(b_row['Date'])[:10]
+                    b_raw_dt = pd.to_datetime(b_row['Date'])
+                    if is_us_stock:
+                        b_raw_dt = b_raw_dt + pd.Timedelta(days=1)
+                    b_date_str = b_raw_dt.strftime('%Y-%m-%d')
 
                     if b_high > max_so_far: max_so_far = b_high
                     if b_low < min_so_far: min_so_far = b_low
@@ -4579,7 +4757,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
             hits.append({
                 "시장": m_label,
-                "종목명": name,
+                "종목명": get_korean_name(name),
                 "티커": ticker,
                 "추천 포착 날짜": hit_date_str,
                 "추천 진입가": fmt_entry,
@@ -4726,7 +4904,7 @@ def run_midterm_quant_eval(df_sub, name, ticker, fin_info=None):
     up_prob = min(score, 98.0)
 
     return {
-        "name": name,
+        "name": get_korean_name(name),
         "ticker": ticker,
         "entry_price": calc_entry,
         "entry_p": calc_entry,
