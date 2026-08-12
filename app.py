@@ -4247,7 +4247,7 @@ def classify_stock_class(df_sub, ticker):
 def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
     if ctx_obj is not None: add_script_run_ctx(ctx=ctx_obj)
     m_label, name, ticker = task_tuple[:3]
-    if len(task_tuple) > 3 and bulk_cache is None:
+    if len(task_tuple) > 3 and isinstance(task_tuple[3], dict):
         bulk_cache = task_tuple[3]
     try:
         df_hist = None
@@ -4262,9 +4262,17 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
         df_proc, _ = process_data(df_hist, "daily", ticker, skip_news=True)
         if df_proc is None: return []
 
-        # 💡 [속도 50배 향상] OBV & OBV_MA 미리 1회만 연산 (루프 내 중복 연산 완전 제거)
-        df_proc['OBV'] = (np.sign(df_proc['Close'].diff()) * df_proc['Volume']).fillna(0).cumsum()
-        df_proc['OBV_MA'] = df_proc['OBV'].rolling(10, min_periods=1).mean()
+        # ⚡ [NumPy 벡터화 연산 속도 최적화 Engine]
+        # OBV & OBV_MA 및 주요 이동평균을 NumPy 벡터로 고속 계산
+        close_arr = df_proc['Close'].to_numpy(dtype=float)
+        vol_arr = df_proc['Volume'].to_numpy(dtype=float)
+        
+        diff_arr = np.diff(close_arr, prepend=close_arr[0])
+        sign_arr = np.sign(diff_arr)
+        obv_arr = np.cumsum(sign_arr * vol_arr)
+        
+        df_proc['OBV'] = obv_arr
+        df_proc['OBV_MA'] = pd.Series(obv_arr).rolling(10, min_periods=1).mean().to_numpy()
 
         hits = []
         total_len = len(df_proc)
