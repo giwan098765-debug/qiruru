@@ -3729,16 +3729,17 @@ def get_preferred_ma_layer(df_proc):
     except Exception:
         return 5
 # ====================================================================
-# 🛡️ [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 엔진]
+# 🛡️ [60일·120일·200일선 돌파 후 다음 봉 이평선 지지 안착 검증 엔진]
 # ====================================================================
 def verify_ma_breakout_master_rules(df_proc, pos=-1):
     """
-    🏆 [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙]
-    - 규칙 1: 돌파 여유율 (60일선 +1.5%, 120일선 +2.0%, 200일선 +2.5% 이상 종가 안착)
-    - 규칙 2: 이평선 기울기(Slope) 우상향/수평(>=0) 필수 (내리막 저항선 매수 금지)
-    - 규칙 3: RVOL 수급 확증 (60일선 1.5배, 120/200일선 2.0배 이상 + 양봉 종가)
-    - 규칙 4: 2봉 연쇄 안착 검증 (2-Bar Hold)
-    - 규칙 5: 저항 이평선 샌드위치 매물벽 차단 (상방 여유 공간 >= 5.0%)
+    🏆 [이평선 돌파 후 다음 봉 정교한 지지 안착(Support Hold) 검증 시스템]
+    - 핵심: 억지 급등 %가 아닌, 돌파 후 다음 봉(Next Bar)이 이평선에 예쁘게 지지 안착되는지 검증
+    - 조건 1: 다음 봉 이평선 지지 안착 (저가가 이평선 근처 터치/안착 & 종가가 이평선 위 사수)
+    - 조건 2: 이평선 기울기(Slope) 우상향/수평(>=0) 필수 (내리막 저항선 매수 차단)
+    - 조건 3: 돌파 봉 RVOL 수급 확증 (60일선 1.5배, 120/200일선 2.0배 이상 + 양봉 종가)
+    - 조건 4: 지지 붕괴 차단 (다음 봉이 이평선 아래로 꺾이면 트랩 차단)
+    - 조건 5: 저항 이평선 샌드위치 매물벽 차단 (상방 여유 공간 >= 5.0% 필수)
     """
     try:
         if df_proc is None or len(df_proc) < 30:
@@ -3752,6 +3753,7 @@ def verify_ma_breakout_master_rules(df_proc, pos=-1):
         
         c_close = float(curr['Close'])
         c_open  = float(curr['Open'])
+        c_low   = float(curr['Low'])
         c_vol   = float(curr['Volume'])
         
         vol_ma20 = float(curr['Vol_MA_20']) if 'Vol_MA_20' in curr and float(curr['Vol_MA_20']) > 0 else float(df_proc['Volume'].iloc[max(0, idx-20):idx].mean())
@@ -3766,65 +3768,57 @@ def verify_ma_breakout_master_rules(df_proc, pos=-1):
         ma200_prev = float(prev.get('MA_200', ma200_curr))
 
         # ------------------------------------------------------------
-        # 1. 60일선 돌파 및 안착 5대 규칙 검증
+        # 1. 60일선 돌파 후 다음 봉 이평선 지지 안착 검증
         # ------------------------------------------------------------
-        if c_close >= ma60_curr:
-            # 규칙 1: +1.5% 이상 확실한 돌파 여유율 (Clearance Threshold)
-            if c_close < (ma60_curr * 1.015):
-                return False, "60일선 돌파 여유율(+1.5%) 미달 (턱걸이 스침 차단)"
-            # 규칙 2: 기울기(Slope) 우상향/수평 필수
+        if c_close >= ma60_curr * 0.998:
+            # 기울기 우상향/수평 필수
             if ma60_curr < ma60_prev:
                 return False, "60일선 기울기 하향(내리막 저항 차단)"
-            # 규칙 3: 돌파 시 RVOL 1.5배 이상 + 양봉 종가 확증
-            if prev['Close'] < ma60_prev:
-                if rvol < 1.5 or c_close <= c_open:
-                    return False, "60일선 돌파 RVOL 1.5배 미달 또는 음봉"
+            
+            # 돌파 봉 수급 확증
+            if prev['Close'] < ma60_prev and (rvol < 1.5 or c_close <= c_open):
+                return False, "60일선 돌파 RVOL 1.5배 미달 또는 음봉"
+
+            # 전일 돌파 후 당일 봉(다음 봉)이 60일선을 딛고 정교하게 지지하는지 검증
+            if prev['Close'] >= ma60_prev and prev['Open'] < ma60_prev * 1.015:
+                is_support_touch = (c_low <= ma60_curr * 1.025) and (c_close >= ma60_curr * 0.998)
+                if not is_support_touch:
+                    return False, "60일선 다음 봉 이평선 지지 안착 미달"
 
         # ------------------------------------------------------------
-        # 2. 120일선 돌파 및 안착 5대 규칙 검증
+        # 2. 120일선 돌파 후 다음 봉 이평선 지지 안착 검증
         # ------------------------------------------------------------
-        if c_close >= ma120_curr:
-            # 규칙 1: +2.0% 이상 확실한 돌파 여유율
-            if c_close < (ma120_curr * 1.020):
-                return False, "120일선 돌파 여유율(+2.0%) 미달"
-            # 규칙 2: 기울기 우상향/수평 필수
+        if c_close >= ma120_curr * 0.998:
             if ma120_curr < ma120_prev:
                 return False, "120일선 기울기 하향"
-            # 규칙 3: 돌파 시 RVOL 2.0배 이상 + 양봉 종가 확증
-            if prev['Close'] < ma120_prev:
-                if rvol < 2.0 or c_close <= c_open:
-                    return False, "120일선 돌파 RVOL 2.0배 미달 또는 음봉"
+            if prev['Close'] < ma120_prev and (rvol < 2.0 or c_close <= c_open):
+                return False, "120일선 돌파 RVOL 2.0배 미달 또는 음봉"
+            if prev['Close'] >= ma120_prev and prev['Open'] < ma120_prev * 1.015:
+                is_support_touch = (c_low <= ma120_curr * 1.025) and (c_close >= ma120_curr * 0.998)
+                if not is_support_touch:
+                    return False, "120일선 다음 봉 이평선 지지 안착 미달"
 
         # ------------------------------------------------------------
-        # 3. 200일선 돌파 및 안착 5대 규칙 검증
+        # 3. 200일선 돌파 후 다음 봉 이평선 지지 안착 검증
         # ------------------------------------------------------------
-        if c_close >= ma200_curr:
-            # 규칙 1: +2.5% 이상 확실한 돌파 여유율
-            if c_close < (ma200_curr * 1.025):
-                return False, "200일선 돌파 여유율(+2.5%) 미달"
-            # 규칙 2: 기울기 우상향/수평 필수
+        if c_close >= ma200_curr * 0.998:
             if ma200_curr < ma200_prev:
                 return False, "200일선 기울기 하향"
-            # 규칙 3: 돌파 시 RVOL 2.0배 이상 + 양봉 종가 확증
-            if prev['Close'] < ma200_prev:
-                if rvol < 2.0 or c_close <= c_open:
-                    return False, "200일선 돌파 RVOL 2.0배 미달 또는 음봉"
+            if prev['Close'] < ma200_prev and (rvol < 2.0 or c_close <= c_open):
+                return False, "200일선 돌파 RVOL 2.0배 미달 또는 음봉"
+            if prev['Close'] >= ma200_prev and prev['Open'] < ma200_prev * 1.015:
+                is_support_touch = (c_low <= ma200_curr * 1.025) and (c_close >= ma200_curr * 0.998)
+                if not is_support_touch:
+                    return False, "200일선 다음 봉 이평선 지지 안착 미달"
 
         # ------------------------------------------------------------
-        # 4. 규칙 4: 2봉 연쇄 안착 검증 (2-Bar Hold)
+        # 4. 다음 봉 지지 붕괴 음봉 차단
         # ------------------------------------------------------------
-        if idx >= 2:
-            prev2 = df_proc.iloc[idx - 2]
-            p2_close = float(prev2['Close'])
-            p1_close = float(prev['Close'])
-            ma60_p2 = float(prev2.get('MA_60', ma60_prev))
-            
-            # 전일 돌파 성공했으나 당일 60일선 아래로 무너진 이탈봉 차단
-            if p1_close >= ma60_prev and p2_close < ma60_p2 and c_close < ma60_curr:
-                return False, "60일선 2봉 연쇄 안착 실패 (트랩 차단)"
+        if prev['Close'] >= ma60_prev and c_close < ma60_curr * 0.995:
+            return False, "60일선 다음 봉 지지 붕괴(트랩 차단)"
 
         # ------------------------------------------------------------
-        # 5. 규칙 5: 저항 이평선 샌드위치 매물벽 차단 (Ceiling Wall Distance)
+        # 5. 저항 이평선 샌드위치 매물벽 차단 (상방 여유 공간 >= 5.0%)
         # ------------------------------------------------------------
         upper_mas = [m for m in [ma60_curr, ma120_curr, ma200_curr] if m > c_close]
         if upper_mas:
@@ -3862,7 +3856,11 @@ def calculate_smart_entry_price(df_proc, ai_data):
     macd_hist_prev = float(df_proc['MACD_Hist'].iloc[-2]) if 'MACD_Hist' in df_proc.columns and len(df_proc) >= 2 else macd_hist_curr
     had_squeeze = df_proc['Squeeze_On'].iloc[-5:-1].any() if 'Squeeze_On' in df_proc.columns and len(df_proc) >= 5 else False
 
-    # 캔들 형태 및 이격도
+    # 🛡️ [고점 꺾임 폭락 음봉 차단 방어 필터]
+    recent_20_high = float(df_proc['High'].tail(20).max())
+    if (c_close < recent_20_high * 0.94) and (c_close < c_open):
+        return None, 0.0, 0.0, ""
+
     body = abs(c_close - c_open)
     upper_shadow = c_high - max(c_open, c_close)
     is_fading = (macd_hist_curr < macd_hist_prev) or (c_close < c_open) or (upper_shadow > body * 0.4)
@@ -4350,18 +4348,24 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
             if not (is_bottom_reversal or is_class_a_staircase_reentry or is_secular_megacap_trend): continue
 
-            # 🛡️ [가짜 돌파 & 수직 꺾임 폭락 차단 방어 필터]
+            # 🛡️ [고점 꺾임 폭락 & 20/60일선 공중부양 음봉 트랩 차단 3대 강철 방어 필터]
+            # 1. 최근 20일 고점 대비 -6.0% 이상 꺾여 내리는 하락 음봉 차단
+            recent_20_high = float(df_proc['High'].iloc[max(0, pos-20):pos+1].max())
+            is_peak_falling = (c_close < recent_20_high * 0.94) and (c_close < c_open)
+
+            # 2. 20일선/60일선 지지선 정교한 터치 안착 필수 (공중에 어중간하게 뜬 봉 무조건 차단)
+            is_ma_touch = (c_low_val <= ma20 * 1.020) or (c_low_val <= ma60 * 1.020)
+
+            # 3. 윗꼬리 트랩 및 과열 꺾임 음봉 차단
             c_high = float(latest['High'])
             c_low  = float(latest['Low'])
             c_open = float(latest['Open'])
             candle_range = c_high - c_low
             upper_shadow = c_high - max(c_close, c_open)
-            is_shadow_trap = (upper_shadow / candle_range > 0.40) if candle_range > 0 else False
+            is_shadow_trap = (upper_shadow / candle_range > 0.38) if candle_range > 0 else False
+            is_vertical_drop = (disp_20 > 108.0) and (c_close < c_open) and (vol_curr > vol_ma20 * 1.2)
 
-            # 수직 꺾임 과열(이격도 110% 초과 + 거래량 터진 음봉) 차단
-            is_vertical_drop = (disp_20 > 110.0) and (c_close < c_open) and (vol_curr > vol_ma20 * 1.3)
-
-            # 🧱 [상방 이평선 저항벽 5% 미만 무조건 차단 가드레일] 캔들 위 5% 이내에 60, 120, 200일선 저항이 막고 있으면 100% 무조건 차단!
+            # 🧱 상방 이평선 저항벽 5% 미만 차단
             ma60_val  = float(latest.get('MA_60', c_close))
             ma120_val = float(latest.get('MA_120', c_close))
             ma200_val = float(latest.get('MA_200', c_close))
@@ -4372,10 +4376,10 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 if ((nearest_upper - c_close) / c_close) * 100.0 < 5.0:
                     is_upper_ma_blocked = True
 
-            # 🛡️ [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 검증]
+            # 🛡️ 60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 검증
             is_valid_breakout, _ = verify_ma_breakout_master_rules(df_proc, pos=pos)
 
-            if is_shadow_trap or is_vertical_drop or not is_obv_supported or is_upper_ma_blocked or not is_valid_breakout:
+            if is_peak_falling or not is_ma_touch or is_shadow_trap or is_vertical_drop or not is_obv_supported or is_upper_ma_blocked or not is_valid_breakout:
                 continue
 
             last_hit_bar = pos
