@@ -5265,13 +5265,62 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
     except Exception:
         return []
 
+def check_downtrend_breakout_and_bottom_support(df_sub):
+    """
+    🛡️ [6개월~1년 중장기 전용] 하향 추세선 상방 돌파 또는 수평 바닥 지지선 안착 검증
+    """
+    if df_sub is None or len(df_sub) < 100:
+        return False, 0.0
+    
+    highs = df_sub['High'].values
+    lows = df_sub['Low'].values
+    closes = df_sub['Close'].values
+    
+    # 1. 최근 120일간의 최저점 및 바닥 지지대 산출 (20% 백분위)
+    recent_lows = lows[-120:] if len(lows) >= 120 else lows
+    support_level = np.percentile(recent_lows, 20)
+    
+    # 2. 바닥 지지 검증: 최근 30일 내 종가가 바닥 지지선 근처에서 지지받고 형성되었는지
+    bottom_touches = np.sum((lows[-30:] <= support_level * 1.05) & (closes[-30:] >= support_level * 0.95))
+    is_bottom_supported = (bottom_touches >= 1) and (closes[-1] >= support_level * 0.97)
+    
+    # 3. 우하향 추세 저항선 산출
+    p1_idx = np.argmax(highs[-200:]) if len(highs) >= 200 else np.argmax(highs)
+    p1_idx_abs = len(highs) - len(highs[-200:]) + p1_idx if len(highs) >= 200 else p1_idx
+    
+    x1, y1 = p1_idx_abs, highs[p1_idx_abs]
+    
+    subsequent_indices = range(p1_idx_abs + 10, len(highs) - 3, 3)
+    valid_ms = []
+    for p2 in subsequent_indices:
+        if highs[p2] < y1:
+            m = (highs[p2] - y1) / (p2 - x1)
+            c = y1 - m * x1
+            valid_ms.append((m, c))
+            
+    if valid_ms:
+        valid_ms.sort(key=lambda x: x[0])
+        best_m, best_c = valid_ms[len(valid_ms)//2]
+    else:
+        best_m, best_c = 0.0, y1
+        
+    curr_x = len(closes) - 1
+    trendline_curr = best_m * curr_x + best_c
+    
+    # 하향 추세선 상방 돌파 여부 (현재 종가가 하향 추세선 98% 이상 지점)
+    is_trend_broken_out = (closes[-1] >= trendline_curr * 0.98)
+    
+    is_passed = is_trend_broken_out or is_bottom_supported
+    return is_passed, support_level
+
 def run_midterm_quant_eval(df_sub, name, ticker, fin_info=None):
     """
     1년 대파동(+100%+) 전용 4대 핵심 필터 결합 엔진
     1. 시장 지수 약세장 강제 차단
     2. 200일선 바닥 탈출(1~2번째 눌림목) + 상투(200일선 이격도 130% 초과) 제거
-    3. 재무 및 OBV 세력 매집 검증
-    4. 3단계 익절(+30%/+60%/+100%) & +15% Break-Even(본절 방어) 리턴
+    3. 하향 추세선 상방 돌파 및 수평 바닥 지지선 안착 필수 검증 (신규 추가!)
+    4. 재무 및 OBV 세력 매집 검증
+    5. 3단계 익절(+30%/+60%/+100%) & +15% Break-Even(본절 방어) 리턴
     """
     if df_sub is None or len(df_sub) < 150:
         return None
@@ -5348,6 +5397,11 @@ def run_midterm_quant_eval(df_sub, name, ticker, fin_info=None):
     # 🔥 [시세 초입 검증 2] 20일선 이격도 (95% ~ 108% 1~2번째 눌림목 구간만 승인)
     disparity_20 = (c_close / ma20) * 100.0 if ma20 > 0 else 100.0
     if not (95.0 <= disparity_20 <= 108.0):
+        return None
+
+    # 🛡️ [신규 필수 검증] 하향 추세선 상방 돌파 또는 수평 바닥 지지선 안착 필수 확인
+    is_passed_trend_support, _ = check_downtrend_breakout_and_bottom_support(df_sub)
+    if not is_passed_trend_support:
         return None
 
     # MACD 오실레이터 및 수급 유입 검증
@@ -5575,9 +5629,17 @@ def bg_scan_worker_midterm(assets_dict):
     kr_items = {k: v for k, v in assets_dict["₩ 국내 주식"].items() if not any(x in k for x in ["등극주", "시총", "주요통화"])}
     us_items = {k: v for k, v in assets_dict["💲 미국 주식"].items() if not any(x in k for x in ["등극주", "시총", "주요통화"])}
 
+    raw_tasks = []
+    for k, v in kr_items.items(): raw_tasks.append((k, v, 'scan_midterm_kr'))
+    for k, v in us_items.items(): raw_tasks.append((k, v, 'scan_midterm_us'))
+
+    seen_tickers = set()
     all_tasks = []
-    for k, v in kr_items.items(): all_tasks.append((k, v, 'scan_midterm_kr'))
-    for k, v in us_items.items(): all_tasks.append((k, v, 'scan_midterm_us'))
+    for name, t_code, target_key in raw_tasks:
+        clean_t = str(t_code).strip().upper()
+        if clean_t not in seen_tickers:
+            seen_tickers.add(clean_t)
+            all_tasks.append((get_korean_name(name), clean_t, target_key))
 
     total_count = len(all_tasks)
     if total_count == 0: return
@@ -5666,11 +5728,19 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     kr_items = {k: v for k, v in assets_dict["₩ 국내 주식"].items() if not any(x in k for x in ["등극주", "시총", "주요통화"])}
     us_items = {k: v for k, v in assets_dict["💲 미국 주식"].items() if not any(x in k for x in ["등극주", "시총", "주요통화"])}
 
-    all_tasks = []
+    raw_tasks = []
     if target_market in ["국내", "전체"]:
-        for k, v in kr_items.items(): all_tasks.append(("국내", k, v))
+        for k, v in kr_items.items(): raw_tasks.append(("국내", k, v))
     if target_market in ["미국", "전체"]:
-        for k, v in us_items.items(): all_tasks.append(("미국", k, v))
+        for k, v in us_items.items(): raw_tasks.append(("미국", k, v))
+
+    seen_tickers = set()
+    all_tasks = []
+    for m_lbl, name, t_code in raw_tasks:
+        clean_t = str(t_code).strip().upper()
+        if clean_t not in seen_tickers:
+            seen_tickers.add(clean_t)
+            all_tasks.append((m_lbl, get_korean_name(name), clean_t))
 
     total_count = len(all_tasks)
     if total_count == 0: return []
@@ -5704,6 +5774,17 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
                     historical_hits.extend(hits)
             except Exception:
                 pass
+
+    # 🛡️ [중복 추천 시그널 완전 제거 가드레일] 티커 및 포착 날짜 기준 중복 제거
+    dedup_hits = []
+    seen_hit_keys = set()
+    for h in historical_hits:
+        h['종목명'] = get_korean_name(h['종목명'])
+        h_key = (str(h.get('티커', '')).upper(), str(h.get('추천 포착 날짜', '')).strip())
+        if h_key not in seen_hit_keys:
+            seen_hit_keys.add(h_key)
+            dedup_hits.append(h)
+    historical_hits = dedup_hits
 
     progress_bar.progress(1.0)
     status_box.success(f"✅ 초고속 과거 1년 스캔 완료! 총 {len(historical_hits)}건의 정예 추천 포착 기록을 찾았습니다.")
@@ -6345,6 +6426,12 @@ with main_tab3:
 
     if history_table_data:
         df_display = pd.DataFrame(history_table_data)
+        # 🛡️ [중복 행 원천 차단 가드레일] 티커 및 추천 포착 날짜 기준 중복 항목 제거
+        if '티커' in df_display.columns and '추천 포착 날짜' in df_display.columns:
+            df_display = df_display.drop_duplicates(subset=['티커', '추천 포착 날짜']).reset_index(drop=True)
+        elif '종목명' in df_display.columns and '추천 포착 날짜' in df_display.columns:
+            df_display = df_display.drop_duplicates(subset=['종목명', '추천 포착 날짜']).reset_index(drop=True)
+
         if '시장' in df_display.columns:
             df_display['시장'] = df_display['시장'].apply(lambda x: "🇰🇷 국내" if "국내" in str(x) else ("🇺🇸 미국" if "미국" in str(x) else str(x)))
         
