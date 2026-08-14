@@ -5053,7 +5053,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
         total_eval_len = len(eval_df)
 
         for pos in range(start_search_idx, total_eval_len, 1):
-            if pos - last_hit_bar < 5: continue
+            if pos - last_hit_bar < 3: continue
             
             latest = df_proc.iloc[pos]
             prev = df_proc.iloc[pos - 1] if pos > 0 else latest
