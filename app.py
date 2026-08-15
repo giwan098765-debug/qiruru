@@ -6103,23 +6103,6 @@ with main_tab2:
 </div>
 </div>""", unsafe_allow_html=True)
 
-    # 🏆 [금일 포착 정예 추천주 퀀트/기술적 지표 통합 순위]
-    st.markdown("#### 🏆 금일 추천주 퀀트·기술적 지표 통합 최종 순위")
-    midterm_recs_raw = st.session_state.get('scan_midterm_kr', []) + st.session_state.get('scan_midterm_us', [])
-    if not midterm_recs_raw:
-        history_table_data_check = st.session_state.get('history_scan_table', [])
-        if history_table_data_check:
-            midterm_recs_raw = history_table_data_check
-    if midterm_recs_raw:
-        sorted_recs = sorted(midterm_recs_raw, key=lambda x: x.get('composite_score', 0) if isinstance(x, dict) else 0, reverse=True)
-        unique_ranked_names = []
-        for item in sorted_recs:
-            s_name = item.get('name') or item.get('종목명') or item.get('stock_name')
-            if s_name and s_name not in unique_ranked_names:
-                unique_ranked_names.append(s_name)
-        if unique_ranked_names:
-            rank_md_lines = [f"**{i+1}위**: {name}" for i, name in enumerate(unique_ranked_names)]
-            st.markdown("\n\n".join(rank_md_lines))
     st.markdown("#### 과거 1년 전체 종목 추천 날짜 & 수익률 전수 조사")
     st.markdown("<div style='color: #38bdf8; font-weight: bold; font-size: 14px; margin-bottom: 10px;'>✨ 과거 1년 내 포착된 종목과 추천 날짜 및 현재/최고 수익률 표 ✨</div>", unsafe_allow_html=True)
 
