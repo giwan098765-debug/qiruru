@@ -1443,8 +1443,30 @@ def get_raw_daily_data(ticker):
 # 🛡️ [마감 종가 확정 가드레일] 장중 미확정 실시간 봉 제외 및 마감 확정 봉 기준 퀀트 정제 함수
 def filter_closed_daily_candles(df, ticker):
     """
-    💡 [장중 실시간 시세 100% 보존] 장중에도 현재가/고가/저가가 반영되도록 실시간 봉을 그대로 유지합니다.
+    🛡️ 한국거래소 장 종료(15:30) 전에는 미확정 실시간 봉을 제외하고 전일 마감 확정봉 기준으로 정제
     """
+    if df is None or df.empty:
+        return df
+    
+    now = datetime.now()
+    now_time = now.time()
+    today_date = now.date()
+
+    ticker_str = str(ticker).strip().upper()
+    is_kr = ticker_str.endswith('.KS') or ticker_str.endswith('.KQ') or (ticker_str.split('.')[0].isdigit() and len(ticker_str.split('.')[0]) == 6)
+    is_us = not is_kr and not (ticker_str.endswith('-KRW') or ticker_str.startswith('KRW-'))
+
+    last_date = pd.to_datetime(df['Date'].iloc[-1]).date()
+    
+    if last_date == today_date:
+        if is_kr and (now.weekday() < 5) and (now_time < dtime(15, 30)):
+            # 🇰🇷 국내 주식: 평일 15:30 이전 장중에는 당일 미확정 봉 제외
+            if len(df) > 1:
+                df = df.iloc[:-1].copy().reset_index(drop=True)
+        elif is_us and (now.weekday() < 5) and (now_time >= dtime(22, 30) or now_time < dtime(6, 0)):
+            # 🇺🇸 미국 주식: 미국 정규장 진행 중에는 당일 미확정 봉 제외
+            if len(df) > 1:
+                df = df.iloc[:-1].copy().reset_index(drop=True)
     return df
 
 def get_last_closed_market_date(ticker=None):
@@ -5369,32 +5391,28 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                         status_txt = "🌊 눌림 진행중 (대기)"
                         action_guide = "🌊 대기/관망: 200일선 지지 여부를 확인하며 -15%~-20% 2차 물타기 타점을 대기하세요."
             else:
-                # ⚡ [오늘 포착된 실시간 신규 추천 시그널]
+                # ⚡ [추천 당일]: 다음 날 매수 예정이므로 당일 수익률은 0.0% 고정
                 avg_price = entry_p
-                display_price = curr_p
-                max_so_far = max(entry_p, curr_p)
-                final_ret_pct = round(((curr_p - entry_p) / entry_p) * 100.0, 1) if entry_p > 0 else 0.0
-                max_ret_pct = max(0.0, final_ret_pct)
+                display_price = entry_p
+                max_so_far = entry_p
+                final_ret_pct = 0.0
+                max_ret_pct = 0.0
                 max_date_str = hit_date_str
                 if is_class_a:
                     status_txt = "🛒 상대강도 상위 5% (1차 50% 진입)"
-                    action_guide = "🛒 상대강도 상위 5%: 지수 대비 상대강도 TOP 5% 주도 파동 포착! 목표 자금의 1차 50% 지정가 비중으로 진입하세요."
+                    action_guide = "🛒 상대강도 상위 5%: 지수 대비 상대강도 TOP 5% 주도 파동 포착! 익일 지정가 1차 50% 진입하세요."
                 else:
                     status_txt = "🛒 신규 매수 (1차 50% 진입)"
-                    action_guide = "🛒 금일 신규 추천: 200일선 바닥 탈출 포착! 목표 자금의 1차 50% 지정가 비중으로 진입하세요."
+                    action_guide = "🛒 금일 신규 추천: 200일선 바닥 탈출 포착! 익일 지정가 1차 50% 진입하세요."
 
-            # ⚡ [실시간 캔들 대응] 당일 실시간 캔들 수익률을 그대로 실시간 반영
-            if hit_date_str == today_str:
+            # ⚡ 당일 포착 건 수익률 0% 확정 보정
+            if after_df.empty:
                 avg_price = entry_p
-                display_price = curr_p
-                max_so_far = max(entry_p, curr_p)
-                final_ret_pct = round(((curr_p - entry_p) / entry_p) * 100.0, 1) if entry_p > 0 else 0.0
-                max_ret_pct = max(0.0, final_ret_pct)
+                display_price = entry_p
+                max_so_far = entry_p
+                final_ret_pct = 0.0
+                max_ret_pct = 0.0
                 max_date_str = hit_date_str
-                if is_class_a:
-                    status_txt = "🛒 상대강도 상위 5% (1차 50% 진입)"
-                else:
-                    status_txt = "🛒 신규 매수 (1차 50% 진입)"
 
             is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
             fmt_limit = f"₩{calc_entry:,.0f}" if is_krw else f"${calc_entry:,.2f}"
@@ -5946,7 +5964,45 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
         if h_key not in seen_hit_keys:
             seen_hit_keys.add(h_key)
             dedup_hits.append(h)
-    historical_hits = dedup_hits
+
+# 🏛️ [국내주 200일선/상대강도 vs 미국주 메가캡/신고가 모멘텀 전용 랭킹 & 날짜별 3종목 엄선]
+    US_MEGACAP_MOATS = {
+        "NVDA", "MSFT", "AAPL", "AMZN", "GOOGL", "GOOG", "META", "TSLA",
+        "AVGO", "LLY", "ASML", "COST", "JPM", "UNH", "V", "MA", "AMD",
+        "QCOM", "PLTR", "TXN", "ISRG", "ORCL", "NFLX"
+    }
+
+    def calc_separated_priority(item):
+        ticker_raw = str(item.get('티커', '')).upper().strip()
+        is_kr = ticker_raw.endswith('.KS') or ticker_raw.endswith('.KQ') or "국내" in str(item.get('시장', ''))
+        status_txt = str(item.get('상태', ''))
+        mtf_val = float(item.get('mtf_score', 0.0))
+
+        if is_kr:
+            # 🇰🇷 [국내주]: 1순위 상대강도 상위 5% (+50점) ➔ 2순위 200일선 바닥 턴어라운드 (+30점) ➔ MTF 점수
+            rs_score = 50.0 if "상대강도" in status_txt else 0.0
+            turnaround_score = 30.0 if "신규 매수" in status_txt else 0.0
+            return rs_score + turnaround_score + mtf_val
+        else:
+            # 🇺🇸 [미국주]: 1순위 52주 신고가 상대강도 (+45점) ➔ 2순위 메가캡 독점 해자 (+35점) ➔ 바닥 탈출 (+15점) ➔ MTF 점수
+            ticker_clean = ticker_raw.split('.')[0].split('-')[0].strip()
+            rs_score = 45.0 if "상대강도" in status_txt else 0.0
+            moat_score = 35.0 if ticker_clean in US_MEGACAP_MOATS else 0.0
+            buy_score = 15.0 if "신규 매수" in status_txt else 0.0
+            return rs_score + moat_score + buy_score + (mtf_val * 0.5)
+
+    from collections import defaultdict
+    market_date_groups = defaultdict(list)
+    for h in dedup_hits:
+        group_key = (h['추천 포착 날짜'], "국내" if "국내" in str(h.get('시장', '')) else "미국")
+        market_date_groups[group_key].append(h)
+
+    filtered_hits = []
+    for g_key, items in market_date_groups.items():
+        sorted_items = sorted(items, key=calc_separated_priority, reverse=True)
+        filtered_hits.extend(sorted_items[:3])  # 🎯 날짜/시장당 최우선 3개 종목만 엄선
+
+    historical_hits = filtered_hits
 
     progress_bar.progress(1.0)
     status_box.success(f"✅ 초고속 과거 1년 스캔 완료! 총 {len(historical_hits)}건의 정예 추천 포착 기록을 찾았습니다.")
