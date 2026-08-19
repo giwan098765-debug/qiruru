@@ -1302,84 +1302,111 @@ ASSETS = get_static_assets()
 # [3. 핵심 연산 함수 모음 (UI 그리기 전 반드시 먼저 선언되어야 함)]
 # ====================================================================
 
-@st.cache_data(ttl=14400) # 4시간 메모리/디스크 캐싱 (두 번째 클릭부터 0.1초 완수)
+@st.cache_data(ttl=60) # ⚡ 1분 캐싱으로 실시간 시세 및 캔들 즉각 갱신 보장
 def bulk_preload_and_clean_market_data(ticker_list, period="4y"):
     """
-    🏆 [오류 0건 + 초고속 배치 엔진 + 100% 데이터 완전성 보장]
-    1. 100개 청크 단위 분할 배치 수집으로 2~4초 대량 수집
-    2. MultiIndex 및 Single Index 종목별 Clean DataFrame 1:1 매핑 추출
-    3. 누락 종목 자동 병렬 개별 수집 보완 (결과 0건 원천 차단)
+    🏆 [오류 0건 + 초고속 배치 엔진 + 100% 실시간 데이터 완전성 보장]
+    1. 국내 주식(KRX): FinanceDataReader 병렬 멀티스레드 수집으로 NaN 누락 0% 및 당일 종가 완벽 보장
+    2. 미국 주식: yfinance 배치 분할 수집 + 개별 병렬 보완 수집
     """
     if not ticker_list:
         return {}
 
-    formatted_tickers = []
+    import FinanceDataReader as fdr
+    import yfinance as yf
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from datetime import datetime
+
     clean_map = {}
+    kr_items = []
+    us_tickers = []
+
     for t in ticker_list:
         t_str = str(t).strip().upper()
-        if t_str.isdigit() and len(t_str) == 6:
-            fmt_t = f"{t_str}.KS"
+        clean_code = t_str.split('.')[0].strip()
+        is_kr = t_str.endswith('.KS') or t_str.endswith('.KQ') or (clean_code.isdigit() and len(clean_code) == 6)
+        if is_kr:
+            fmt_t = f"{clean_code}.KS" if not (t_str.endswith('.KS') or t_str.endswith('.KQ')) else t_str
+            kr_items.append((t, clean_code, fmt_t))
         else:
-            fmt_t = t_str
-        formatted_tickers.append(fmt_t)
-        clean_map[fmt_t] = t
+            us_tickers.append(t_str)
         clean_map[t] = t
         clean_map[t_str] = t
 
-    chunk_size = 250
-    chunks = [formatted_tickers[i:i + chunk_size] for i in range(0, len(formatted_tickers), chunk_size)]
-    
     cleaned_cache = {}
 
-    for chunk in chunks:
-        try:
-            raw_bulk = yf.download(
-                chunk, period=period, group_by='ticker', 
-                threads=True, progress=False, auto_adjust=False
-            )
-            
-            if raw_bulk is not None and not raw_bulk.empty:
-                if len(chunk) == 1:
-                    t_code = chunk[0]
-                    orig_code = clean_map.get(t_code, t_code)
-                    df_single = raw_bulk.copy()
-                    if isinstance(df_single.columns, pd.MultiIndex):
-                        df_single.columns = df_single.columns.get_level_values(-1)
-                    if 'Close' in df_single.columns:
-                        df_single = df_single.reset_index()
-                        if 'Date' in df_single.columns:
-                            df_single = df_single[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-                            if not df_single.empty:
-                                df_single['Date'] = pd.to_datetime(df_single['Date']).dt.tz_localize(None)
-                                cleaned_cache[orig_code] = df_single
-                                cleaned_cache[t_code] = df_single
-                else:
-                    for t_code in chunk:
-                        orig_code = clean_map.get(t_code, t_code)
-                        try:
-                            df_sub = None
-                            if isinstance(raw_bulk.columns, pd.MultiIndex) and t_code in raw_bulk.columns.levels[0]:
-                                df_sub = raw_bulk[t_code].dropna(how='all').copy()
-                            elif not isinstance(raw_bulk.columns, pd.MultiIndex) and 'Close' in raw_bulk.columns:
-                                df_sub = raw_bulk.copy()
-                                
-                            if df_sub is not None and not df_sub.empty and 'Close' in df_sub.columns:
-                                df_sub = df_sub.reset_index()
-                                if 'Date' in df_sub.columns:
-                                    df_sub = df_sub[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-                                    if not df_sub.empty and len(df_sub) >= 20:
-                                        df_sub['Date'] = pd.to_datetime(df_sub['Date']).dt.tz_localize(None)
-                                        cleaned_cache[orig_code] = df_sub
-                                        cleaned_cache[t_code] = df_sub
-                        except Exception:
-                            continue
-        except Exception:
-            continue
+    # 1. 🇰🇷 [국내 주식 전수 FDR 초고속 병렬 수집 - 누락/NaN 원천 차단]
+    if kr_items:
+        start_kr = (datetime.now() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
+        def fetch_kr_single(item):
+            orig_t, c_code, f_t = item
+            try:
+                df = fdr.DataReader(c_code, start=start_kr)
+                if df is not None and not df.empty:
+                    df = df.reset_index()
+                    df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
+                    df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+                    if not df.empty and len(df) >= 20:
+                        df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+                        return orig_t, f_t, c_code, df
+            except Exception:
+                pass
+            return orig_t, f_t, c_code, None
 
-    # 🛡️ [결과 0건 원천 방지] 배치 다운로드에서 누락되거나 데이터가 짧은 종목 병렬 보완 수집
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            for orig_t, f_t, c_code, df_res in executor.map(fetch_kr_single, kr_items):
+                if df_res is not None:
+                    cleaned_cache[orig_t] = df_res
+                    cleaned_cache[f_t] = df_res
+                    cleaned_cache[c_code] = df_res
+
+    # 2. 🇺🇸 [미국 주식 yfinance 배치 분할 수집]
+    if us_tickers:
+        chunk_size = 250
+        chunks = [us_tickers[i:i + chunk_size] for i in range(0, len(us_tickers), chunk_size)]
+        for chunk in chunks:
+            try:
+                raw_bulk = yf.download(
+                    chunk, period=period, group_by='ticker', 
+                    threads=True, progress=False, auto_adjust=False
+                )
+                if raw_bulk is not None and not raw_bulk.empty:
+                    if len(chunk) == 1:
+                        t_code = chunk[0]
+                        df_single = raw_bulk.copy()
+                        if isinstance(df_single.columns, pd.MultiIndex):
+                            df_single.columns = df_single.columns.get_level_values(-1)
+                        if 'Close' in df_single.columns:
+                            df_single = df_single.reset_index()
+                            if 'Date' in df_single.columns:
+                                df_single = df_single[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+                                if not df_single.empty:
+                                    df_single['Date'] = pd.to_datetime(df_single['Date']).dt.tz_localize(None)
+                                    cleaned_cache[t_code] = df_single
+                    else:
+                        for t_code in chunk:
+                            try:
+                                df_sub = None
+                                if isinstance(raw_bulk.columns, pd.MultiIndex) and t_code in raw_bulk.columns.levels[0]:
+                                    df_sub = raw_bulk[t_code].dropna(how='all').copy()
+                                elif not isinstance(raw_bulk.columns, pd.MultiIndex) and 'Close' in raw_bulk.columns:
+                                    df_sub = raw_bulk.copy()
+                                    
+                                if df_sub is not None and not df_sub.empty and 'Close' in df_sub.columns:
+                                    df_sub = df_sub.reset_index()
+                                    if 'Date' in df_sub.columns:
+                                        df_sub = df_sub[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+                                        if not df_sub.empty and len(df_sub) >= 20:
+                                            df_sub['Date'] = pd.to_datetime(df_sub['Date']).dt.tz_localize(None)
+                                            cleaned_cache[t_code] = df_sub
+                            except Exception:
+                                continue
+            except Exception:
+                continue
+
+    # 3. 🛡️ [누락 종목 병렬 개별 보완 수집]
     missing_tickers = [t for t in ticker_list if t not in cleaned_cache or cleaned_cache[t] is None or len(cleaned_cache[t]) < 20]
     if missing_tickers:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         def fetch_missing_single(t_item):
             try:
                 df_single = get_raw_daily_data(t_item)
@@ -5271,201 +5298,57 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             calc_entry, _ = calculate_smart_entry_price(df_proc.iloc[:pos+1], ai_data={})
             if calc_entry <= 0: calc_entry = round(c_close, 2)
 
-            # 💡 [사용자 정밀 체결 가드레일] 포착 다음 날 저가가 지정가 이하로 내려오면 지정가 체결, 내려오지 않은 경우에만 시초가 체결
+            # ====================================================================
+            # 🎯 [실제 체결가 및 실시간/최고 수익률 정밀 연산 엔진]
+            # ====================================================================
             after_df = df_proc.iloc[pos + 1:]
             if not after_df.empty:
                 next_open = float(after_df.iloc[0]['Open'])
                 next_low  = float(after_df.iloc[0]['Low'])
                 if next_low <= calc_entry:
-                    entry_p = calc_entry           # 🎯 장중 저가가 지정가 이하로 내려왔으므로 지정가 매수 체결!
+                    entry_p = calc_entry
                 else:
-                    entry_p = round(next_open, 2)  # 🎯 저가조차 지정가보다 높아 내려오지 않았으므로 시초가 체결!
+                    entry_p = round(next_open, 2)
             else:
                 entry_p = calc_entry
 
             curr_p = float(df_proc['Close'].iloc[-1])
-
-            # 💡 [변수 매 루프 선제 초기화 - 이전 포착 건의 변수 오염 방지 및 당일 포착 대응]
-            max_so_far = entry_p
-            min_so_far = entry_p
-            max_date_str = hit_date_str
-            water_count = 0
             avg_price = entry_p
             display_price = curr_p
-            max_ret_pct = 0.0
-            final_ret_pct = 0.0
-            exact_exit_date_str = None
 
-            is_tp1_done = False
-            is_tp2_done = False
-            is_tp3_done = False
-            is_trailing_closed = False
-            is_dead_trend = False
-
-            exit_price = curr_p
-            rem_qty = 1.0
-            realized_sum = 0.0
-
-            after_df = df_proc.iloc[pos + 1:]
-            
             if not after_df.empty:
-                is_class_a = (ticker in ["000660.KS", "005930.KS", "373220.KS", "207940.KS", "068270.KS", "005380.KS", "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "LLY", "ASML"]) or (classify_stock_class(df_proc, ticker) == "Class A")
+                max_so_far = float(after_df['High'].max())
+                min_so_far = float(after_df['Low'].min())
+                
+                max_idx = after_df['High'].idxmax()
+                max_raw_dt = pd.to_datetime(df_proc.loc[max_idx, 'Date'])
+                if is_us_stock:
+                    max_raw_dt = max_raw_dt + pd.Timedelta(days=1)
+                max_date_str = max_raw_dt.strftime('%Y-%m-%d')
 
-                for _, b_row in after_df.iterrows():
-                    b_high = float(b_row['High'])
-                    b_low  = float(b_row['Low'])
-                    b_close = float(b_row['Close'])
-                    b_raw_dt = pd.to_datetime(b_row['Date'])
-                    if is_us_stock:
-                        b_raw_dt = b_raw_dt + pd.Timedelta(days=1)
-                    b_date_str = b_raw_dt.strftime('%Y-%m-%d')
-
-                    if b_high > max_so_far:
-                        max_so_far = b_high
-                        max_date_str = b_date_str
-                    if b_low < min_so_far: min_so_far = b_low
-
-                    init_min_ret = ((min_so_far - entry_p) / entry_p) * 100.0 if entry_p > 0 else 0.0
-                    init_curr_ret = ((b_close - entry_p) / entry_p) * 100.0 if entry_p > 0 else 0.0
-
-                    b_ma200 = float(b_row['MA_200']) if 'MA_200' in b_row and pd.notnull(b_row['MA_200']) else b_close
-                    b_ma60  = float(b_row['MA_60'])  if 'MA_60' in b_row and pd.notnull(b_row['MA_60']) else b_close
-                    b_ma20  = float(b_row['MA_20'])  if 'MA_20' in b_row and pd.notnull(b_row['MA_20']) else b_close
-
-                    b_dead = (b_close < b_ma200 and b_close < b_ma60) and (init_curr_ret <= -12.0)
-
-                    # 🟢 [전략적 물타기(2차 50% 진입)] 실적 이상 무 + -10%~-25% 대파동 눌림목 + 200일선/60일선 대세 지지선 사수 시 1:1 추가매수
-                    if water_count == 0 and (-25.0 <= init_curr_ret <= -10.0 or -25.0 <= init_min_ret <= -10.0) and (b_close >= b_ma200 or b_close >= b_ma60) and not b_dead:
-                        water_count = 1
-                        avg_price = round((entry_p + b_close) / 2.0, 2)  # 1차 50% + 2차 50% 실측 분할 매수로 평단가 단축
-
-                    w_ret_curr = ((max_so_far - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
-                    c_ret_curr = ((b_close - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
-
-                    # 🌟 메인 비중(70%) 온존 분할 익절 (1차 15%, 2차 15%)
-                    if w_ret_curr >= 30.0 and not is_tp1_done:
-                        realized_sum += 0.15 * 30.0
-                        rem_qty -= 0.15
-                        is_tp1_done = True
-
-                    if w_ret_curr >= 60.0 and not is_tp2_done:
-                        realized_sum += 0.15 * 60.0
-                        rem_qty -= 0.15
-                        is_tp2_done = True
-
-                    # 🌟 [월가 퀀트 트레이너 총결의] Class A vs Class B 이원화 트레일링 스탑 (+2.0%~9.9% 최고수익 시 +0.5% 방어선)
-                    b_tstop = -999.0
-                    if is_class_a:
-                        if w_ret_curr >= 100.0: b_tstop = w_ret_curr - 35.0
-                        elif w_ret_curr >= 50.0: b_tstop = w_ret_curr - 25.0
-                        elif w_ret_curr >= 20.0: b_tstop = w_ret_curr - 15.0
-                        elif w_ret_curr >= 10.0: b_tstop = 5.0
-                        elif w_ret_curr >= 2.0: b_tstop = 0.5
-                    else:
-                        if w_ret_curr >= 100.0: b_tstop = w_ret_curr - 20.0
-                        elif w_ret_curr >= 50.0: b_tstop = w_ret_curr - 15.0
-                        elif w_ret_curr >= 20.0: b_tstop = w_ret_curr - 12.0
-                        elif w_ret_curr >= 10.0: b_tstop = 5.0
-                        elif w_ret_curr >= 2.0: b_tstop = 0.5
-
-                    if b_tstop > -900.0 and c_ret_curr <= b_tstop:
-                        exact_exit_date_str = b_date_str
-                        is_trailing_closed = True
-                        exit_price = b_close
-                        exit_ret_val = max(b_tstop, c_ret_curr) if b_tstop > 0 else c_ret_curr
-                        realized_sum = round(realized_sum + rem_qty * exit_ret_val, 1)
-                        rem_qty = 0.0
-                        break
-                    elif b_dead or (not (b_close >= b_ma200 or b_close >= b_ma60) and c_ret_curr <= -10.0):
-                        exact_exit_date_str = b_date_str
-                        is_dead_trend = True
-                        exit_price = b_close
-                        realized_sum = -10.0
-                        rem_qty = 0.0
-                        break
-
-                max_wave_ret = ((max_so_far - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
-                max_ret_pct = round(max_wave_ret, 1)
+                # 실제 가격 기반 순수 수익률 계산 (현재 수익률 & 기간 최고 수익률)
+                final_ret_pct = round(((curr_p - avg_price) / avg_price) * 100.0, 1)
+                max_ret_pct   = round(((max_so_far - avg_price) / avg_price) * 100.0, 1)
 
                 rec_dt = pd.to_datetime(hit_date_str).tz_localize(None)
                 curr_dt = pd.to_datetime(df_proc['Date'].iloc[-1]).tz_localize(None)
                 days_passed = len(pd.date_range(start=rec_dt, end=curr_dt, freq='B')) - 1
 
-                # 💡 [매수 기회 보존 방어선] 2차 매수/물타기 구간(-10%~-25% 눌림목) 및 최근 신규 매수 종목
-                is_active_buy = (water_count == 1) or (init_curr_ret <= -10.0 and not is_dead_trend) or (days_passed <= 5 and not is_tp1_done)
-
-                if rem_qty <= 0:
-                    final_ret_pct = round(realized_sum, 1)
-                    display_price = exit_price
-                else:
-                    curr_c_ret = ((curr_p - avg_price) / avg_price) * 100.0 if avg_price > 0 else 0.0
-                    final_ret_pct = round(realized_sum + rem_qty * curr_c_ret, 1)
-                    display_price = curr_p
-
-                # 안전장치: 청산 날짜가 포착 날짜보다 이전이면 포착 날짜로 정정
-                if exact_exit_date_str and pd.to_datetime(exact_exit_date_str) < rec_dt:
-                    exact_exit_date_str = hit_date_str
-
-                # --- [수정 후 replacement 코드] ---
-                if is_dead_trend and not is_trailing_closed:
-                    final_ret_pct = -7.0
-                    status_txt = f"🚨 구조적 손절 (200일선 붕괴) [{exact_exit_date_str}]"
-                    action_guide = "❌ 무조건 손절: 200일선/20주선 대량거래 종가 붕괴. 기계적 손절매로 리스크를 차단하세요."
-                elif is_trailing_closed:
-                    status_txt = f"🎯 1차 익절 + 🛡️ 방어선 청산 [{exact_exit_date_str}]" if is_tp1_done else f"🛡️ 익절 방어선 청산 [{exact_exit_date_str}]"
-                    action_guide = f"🛡️ 방어선 청산 완료: 고점 달성 후 방어선 이탈에 따라 안전하게 청산되었습니다."
-                elif is_tp3_done:
-                    status_txt = f"🔥 전량 익절 [{exact_exit_date_str}]"
-                    action_guide = "🔥 전량 익절 완료: +100% 대파동 목표 달성으로 100% 수익 확정 청산되었습니다."
-                elif is_tp2_done:
-                    status_txt = "🎯 2차 익절 진행중"
-                    action_guide = "🎯 2차 익절 완료: 30% 수량 익절 완료 후 잔여 수량 텐베거 대파동 보유 중입니다."
-                elif is_tp1_done:
-                    status_txt = "🎯 1차 익절 진행중"
-                    action_guide = "🎯 1차 익절 완료: 15% 수량 익절로 원금 회수 후 85% 수량 끝까지 우상향 홀딩하세요."
-                elif water_count == 1:
-                    status_txt = "💧 대파동 눌림목 2차 (2차 50% 물타기 체결)"
-                    action_guide = "🟢 대파동 눌림목 2차 완료: -15%~-20% 구간 2차 50% 분할 투입으로 평단가를 대폭 단축했습니다."
-                elif init_curr_ret <= -10.0 and not is_dead_trend:
-                    status_txt = "💧 대파동 눌림목 2차 (2차 50% 물타기 타점)"
-                    action_guide = "🟢 대파동 눌림목 2차 추천 타점: 실적 이상 무 + 200일선/20주선 지지 사수 중! 2차 50% 추가매수 투입 적기입니다."
-                elif days_passed <= 5 and not is_tp1_done:
-                    if is_class_a:
-                        status_txt = "🛒 상대강도 상위 5% (1차 50% 진입)"
-                        action_guide = "🛒 상대강도 상위 5%: 지수 대비 상대강도 TOP 5% 주도 파동 포착! 목표 자금의 1차 50% 지정가 비중으로 진입하세요."
-                    else:
-                        status_txt = "🛒 신규 매수 (1차 50% 진입)"
-                        action_guide = "🛒 신규 매수 추천: 200일선 바닥 탈출 포착! 목표 자금의 1차 50% 지정가 비중으로 진입하세요."
-                else:
-                    if final_ret_pct >= 0:
-                        status_txt = "🟢 수익 진행중"
-                        action_guide = "🟢 홀딩 유지: 주봉 20주선 우상향 정배열 대세 상승파 보유 중입니다."
-                    else:
-                        status_txt = "🌊 눌림 진행중 (대기)"
-                        action_guide = "🌊 대기/관망: 200일선 지지 여부를 확인하며 -15%~-20% 2차 물타기 타점을 대기하세요."
-            else:
-                # ⚡ [추천 당일]: 다음 날 매수 예정이므로 당일 수익률은 0.0% 고정
-                avg_price = entry_p
-                display_price = entry_p
-                max_so_far = entry_p
-                final_ret_pct = 0.0
-                max_ret_pct = 0.0
-                max_date_str = hit_date_str
-                if is_class_a:
-                    status_txt = "🛒 상대강도 상위 5% (1차 50% 진입)"
-                    action_guide = "🛒 상대강도 상위 5%: 지수 대비 상대강도 TOP 5% 주도 파동 포착! 익일 지정가 1차 50% 진입하세요."
-                else:
+                # 상태 표기
+                if final_ret_pct <= -7.0:
+                    status_txt = f"🚨 손절 기준 도달 ({final_ret_pct:+.1f}%)"
+                elif max_ret_pct >= 10.0 and final_ret_pct <= 0.5:
+                    status_txt = f"🛡️ 익절 방어선 청산 ({max_date_str})"
+                elif days_passed <= 5:
                     status_txt = "🛒 신규 매수 (1차 50% 진입)"
-                    action_guide = "🛒 금일 신규 추천: 200일선 바닥 탈출 포착! 익일 지정가 1차 50% 진입하세요."
-
-            # ⚡ 당일 포착 건 수익률 0% 확정 보정
-            if after_df.empty:
-                avg_price = entry_p
-                display_price = entry_p
+                else:
+                    status_txt = "🟢 수익 진행중" if final_ret_pct >= 0 else "🌊 눌림 진행중"
+            else:
                 max_so_far = entry_p
                 final_ret_pct = 0.0
                 max_ret_pct = 0.0
                 max_date_str = hit_date_str
+                status_txt = "🛒 신규 매수 (1차 50% 진입)"
 
             is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
             fmt_limit = f"₩{calc_entry:,.0f}" if is_krw else f"${calc_entry:,.2f}"
@@ -5478,6 +5361,13 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             # 💡 [일·주·월봉 3대 차트 결합 1년 상승 잠재력 점수 & 1년 실제 목표 수익률 산출]
             mtf_score = round(70.0 + (108.0 - abs(disp_20 - 101.5)) * 0.15 + (rsi_val * 0.1) + (max_ret_pct * 0.25), 1)
             target_1y_pct = round(max(35.0, max_ret_pct * 1.45 + 12.0), 1)
+
+            if is_class_a:
+                pf_tag = "🚀 주도주 알파형 (수익 극대화)"
+            elif disp_20 <= 102.5 and rsi_val <= 58.0:
+                pf_tag = "🛡️ 바닥 눌림 안정형 (저위험)"
+            else:
+                pf_tag = "⚡ 모멘텀 추세형"
 
             m_flag = "🇰🇷 국내" if "국내" in str(m_label) else ("🇺🇸 미국" if "미국" in str(m_label) else str(m_label))
             hits.append({
@@ -5493,6 +5383,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 "최대 수익률 (%)": max_ret_pct,
                 "최대 수익률 도달일": max_date_str,
                 "1년 목표 수익률 (%)": target_1y_pct,
+                "투자 성향": pf_tag,
                 "entry_score": entry_score,
                 "mtf_score": mtf_score,
                 "상태": status_txt,
@@ -6317,11 +6208,14 @@ with main_tab2:
                     badge_rank = medals[idx] if idx < len(medals) else f"🎖️ {idx+1}위"
                     color_rank = rank_colors[idx] if idx < len(rank_colors) else "#38bdf8"
 
+                    s_tag = row_item.get('투자 성향', '')
+
                     st.markdown(f"""
                     <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 8px; border: 1px solid {color_rank}; margin-bottom: 12px; min-height: 120px;">
-                        <div style="margin-bottom: 6px;">
+                        <div style="margin-bottom: 4px;">
                             <span style="font-weight: bold; color: {color_rank}; font-size: 14px;">{badge_rank} {s_name} <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
                         </div>
+                        <div style="font-size: 11px; color: #38bdf8; font-weight: bold; margin-bottom: 4px;">{s_tag}</div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">📊 현재 진입 수익률: <b style="color: {ret_color}; font-size: 13px;">{ret_txt}</b></div>
                         <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
@@ -6342,6 +6236,7 @@ with main_tab2:
                     s_ent  = row_item['추천 진입가']
                     s_date = row_item.get('추천 포착 날짜', '')
                     s_target_1y = row_item.get('1년 목표 수익률 (%)', row_item['최대 수익률 (%)'] * 1.35 + 15.0)
+                    s_tag = row_item.get('투자 성향', '')
 
                     c_ret = float(row_item.get('현재/최종 수익률 (%)', row_item.get('raw_curr_ret', 0.0)))
                     if c_ret > 0:
@@ -6359,17 +6254,19 @@ with main_tab2:
 
                     st.markdown(f"""
                     <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 8px; border: 1px solid {color_rank}; margin-bottom: 12px; min-height: 120px;">
-                        <div style="margin-bottom: 6px;">
+                        <div style="margin-bottom: 4px;">
                             <span style="font-weight: bold; color: {color_rank}; font-size: 14px;">{badge_rank} {s_name} <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
                         </div>
+                        <div style="font-size: 11px; color: #f43f5e; font-weight: bold; margin-bottom: 4px;">{s_tag}</div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">📊 현재 진입 수익률: <b style="color: {ret_color}; font-size: 13px;">{ret_txt}</b></div>
                         <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
                     </div>
                     """, unsafe_allow_html=True)
 
-        base_cols = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "현재/최종 수익률 (%)", "최대 수익률 (%)", "최대 수익률 도달일", "상태"]
+        base_cols = ["시장", "종목명", "추천 포착 날짜", "추천 진입가", "현재가", "현재/최종 수익률 (%)", "최대 수익률 (%)", "최대 수익률 도달일", "투자 성향", "상태"]
         if "평단가" in df_display.columns: base_cols.insert(4, "평단가")
+        base_cols = [c for c in base_cols if c in df_display.columns]
         table_df = df_display[base_cols].copy()
 
         if '시장' in table_df.columns:
