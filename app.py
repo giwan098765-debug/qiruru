@@ -875,11 +875,14 @@ with col_title:
 # ====================================================================
 # 🏛️ [실시간 증시 지수 & 환율/한·미 버핏 지수 통합 요약 관제탑 엔지니어링]
 # ====================================================================
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=5)  # ⚡ 새로고침할 때마다 실시간 차트 기반으로 즉시 업데이트 (5초 초단기 캐시)
 def get_realtime_market_indices_dashboard():
     import yfinance as yf
+    import FinanceDataReader as fdr
     import numpy as np
     import pandas as pd
+    from datetime import datetime, timedelta
+    from concurrent.futures import ThreadPoolExecutor
 
     def get_status_color(status):
         if any(x in status for x in ["강세", "과열"]):
@@ -914,25 +917,21 @@ def get_realtime_market_indices_dashboard():
         except Exception:
             return ""
 
-    ticker_map = {
-        'kospi': '^KS11',
-        'kosdaq': '^KQ11',
-        'nasdaq': '^IXIC',
-        'sp500': '^GSPC',
-        'usd': 'KRW=X'
-    }
+    start_dt = (datetime.now() - timedelta(days=45)).strftime('%Y-%m-%d')
+    tasks = [
+        ('kospi', 'KS11', '^KS11'),
+        ('kosdaq', 'KQ11', '^KQ11'),
+        ('sp500', 'US500', '^GSPC'),
+        ('nasdaq', 'IXIC', '^IXIC'),
+        ('usd', 'USD/KRW', 'KRW=X')
+    ]
 
-    try:
-        df_all = yf.download(list(ticker_map.values()), period='1mo', interval='1d', progress=False)
-        closes = df_all['Close'] if 'Close' in df_all else pd.DataFrame()
-    except Exception:
-        closes = pd.DataFrame()
-
-    out = {}
-    for key, sym in ticker_map.items():
+    def fetch_single_index(task):
+        k, fdr_sym, yf_sym = task
         try:
-            if not closes.empty and sym in closes.columns:
-                s = closes[sym].dropna()
+            df = fdr.DataReader(fdr_sym, start=start_dt)
+            if df is not None and not df.empty and 'Close' in df.columns:
+                s = df['Close'].dropna()
                 if not s.empty:
                     c_p = float(s.iloc[-1])
                     p_p = float(s.iloc[-2]) if len(s) > 1 else c_p
@@ -951,65 +950,114 @@ def get_realtime_market_indices_dashboard():
                     is_up = (diff >= 0)
                     stat_color = get_status_color(status)
                     svg = generate_mini_sparkline_svg(s, width=52, height=18, color=stat_color)
-                    out[key] = {
+                    return k, {
                         'price': c_p, 'diff': diff, 'diff_pct': diff_pct,
-                        'status': status, 'svg': svg, 'is_up': is_up, 'color': stat_color
+                        'status': status, 'svg': svg, 'is_up': is_up, 'color': stat_color,
+                        'series': s.tail(15).tolist()
                     }
         except Exception:
             pass
 
+        # yfinance fallback
+        try:
+            df_yf = yf.download(yf_sym, period='1mo', interval='1d', progress=False)
+            if df_yf is not None and not df_yf.empty:
+                s = df_yf['Close'] if isinstance(df_yf['Close'], pd.Series) else df_yf['Close'].iloc[:, 0]
+                s = s.dropna()
+                if not s.empty:
+                    c_p = float(s.iloc[-1])
+                    p_p = float(s.iloc[-2]) if len(s) > 1 else c_p
+                    diff = c_p - p_p
+                    diff_pct = (diff / p_p) * 100.0 if p_p > 0 else 0.0
+                    ma20 = float(s.rolling(20, min_periods=1).mean().iloc[-1])
+                    disp20 = (c_p / ma20) * 100.0 if ma20 > 0 else 100.0
+                    
+                    if disp20 >= 101.2:
+                        status = '강세'
+                    elif 98.8 <= disp20 < 101.2:
+                        status = '횡보'
+                    else:
+                        status = '약세'
+
+                    is_up = (diff >= 0)
+                    stat_color = get_status_color(status)
+                    svg = generate_mini_sparkline_svg(s, width=52, height=18, color=stat_color)
+                    return k, {
+                        'price': c_p, 'diff': diff, 'diff_pct': diff_pct,
+                        'status': status, 'svg': svg, 'is_up': is_up, 'color': stat_color,
+                        'series': s.tail(15).tolist()
+                    }
+        except Exception:
+            pass
+
+        return k, None
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        results = executor.map(fetch_single_index, tasks)
+        for k, v in results:
+            if v: out[k] = v
+
     # Defaults if download misses items
     defaults = {
-        'kospi': {'price': 2650.15, 'diff': 15.2, 'diff_pct': 0.58, 'status': '강세', 'svg': '', 'is_up': True, 'color': '#f43f5e'},
-        'kosdaq': {'price': 855.30, 'diff': 3.1, 'diff_pct': 0.36, 'status': '강세', 'svg': '', 'is_up': True, 'color': '#f43f5e'},
-        'nasdaq': {'price': 17850.20, 'diff': -45.1, 'diff_pct': -0.25, 'status': '강세', 'svg': '', 'is_up': False, 'color': '#f43f5e'},
-        'sp500': {'price': 5520.10, 'diff': -5.2, 'diff_pct': -0.09, 'status': '강세', 'svg': '', 'is_up': False, 'color': '#f43f5e'},
-        'usd': {'price': 1385.50, 'diff': -4.5, 'diff_pct': -0.32, 'status': '약세', 'svg': '', 'is_up': False, 'color': '#38bdf8'}
+        'kospi': {'price': 6471.17, 'diff': -398.66, 'diff_pct': -5.80, 'status': '횡보', 'svg': '', 'is_up': False, 'color': '#10b981', 'series': [6500, 6471]},
+        'kosdaq': {'price': 824.46, 'diff': -9.74, 'diff_pct': -1.17, 'status': '강세', 'svg': '', 'is_up': False, 'color': '#f43f5e', 'series': [830, 824]},
+        'nasdaq': {'price': 26435.41, 'diff': 145.70, 'diff_pct': 0.55, 'status': '강세', 'svg': '', 'is_up': True, 'color': '#f43f5e', 'series': [26300, 26435]},
+        'sp500': {'price': 7735.35, 'diff': 43.59, 'diff_pct': 0.57, 'status': '강세', 'svg': '', 'is_up': True, 'color': '#f43f5e', 'series': [7700, 7735]},
+        'usd': {'price': 1388.26, 'diff': -26.47, 'diff_pct': -1.87, 'status': '약세', 'svg': '', 'is_up': False, 'color': '#38bdf8', 'series': [1410, 1388]}
     }
     for k, v in defaults.items():
         if k not in out:
             out[k] = v
 
-    # 🇰🇷 한국 버핏 지수 (KR Buffett Indicator)
+    # 🇰🇷 한국 버핏 지수 (KR Buffett Indicator - 실시간 코스피 차트 연동)
     try:
         kospi_p = out['kospi']['price']
-        kr_buffett_pct = round((kospi_p / 6977.94 * 2280.0) / 2250.0 * 100.0, 1)
-        kr_buffett_diff = round((out['kospi']['diff'] / 6977.94 * 2280.0) / 2250.0 * 100.0, 1)
+        kospi_diff = out['kospi']['diff']
+        series_ks = out['kospi'].get('series', [kospi_p])
+        
+        kr_buffett_pct = round((kospi_p / 6600.0) * 100.0, 1)
+        kr_buffett_diff = round((kospi_diff / 6600.0) * 100.0, 1)
         kr_buffett_status = "적정(중립)" if 85.0 <= kr_buffett_pct < 120.0 else ("과열(고평가)" if kr_buffett_pct >= 120.0 else "저평가(매수적기)")
         kr_buffett_badge = "🚨 과열" if kr_buffett_pct >= 120.0 else ("🟢 적정" if kr_buffett_pct >= 85.0 else "💧 저평가")
         
         kr_color = get_status_color(kr_buffett_status)
-        kr_buffett_svg = generate_mini_sparkline_svg([95.0, 98.2, 101.0, 104.2, kr_buffett_pct], width=48, height=18, color=kr_color)
+        kr_series = [round((p / 6600.0) * 100.0, 1) for p in series_ks]
+        kr_buffett_svg = generate_mini_sparkline_svg(kr_series, width=48, height=18, color=kr_color)
     except Exception:
-        kr_buffett_pct = 101.5
-        kr_buffett_diff = 0.4
+        kr_buffett_pct = 98.0
+        kr_buffett_diff = -6.0
         kr_buffett_status = "적정(중립)"
         kr_buffett_badge = "🟢 적정"
         kr_color = "#10b981"
-        kr_buffett_svg = generate_mini_sparkline_svg([95.0, 98.2, 101.0, 104.2, 101.5], width=48, height=18, color=kr_color)
+        kr_buffett_svg = generate_mini_sparkline_svg([95.0, 98.2, 101.0, 104.2, 98.0], width=48, height=18, color=kr_color)
 
     out['kr_buffett'] = {
         'pct': kr_buffett_pct, 'diff': kr_buffett_diff, 'status_txt': kr_buffett_status,
         'badge': kr_buffett_badge, 'svg': kr_buffett_svg, 'color': kr_color
     }
 
-    # 🇺🇸 미국 버핏 지수 (US Buffett Indicator)
+    # 🇺🇸 미국 버핏 지수 (US Buffett Indicator - 실시간 S&P500 차트 연동)
     try:
         sp_p = out['sp500']['price']
-        us_buffett_pct = round(sp_p / 41.2, 1)
-        us_buffett_diff = round((out['sp500']['diff'] / 41.2), 1)
+        sp_diff = out['sp500']['diff']
+        series_sp = out['sp500'].get('series', [sp_p])
+        
+        us_buffett_pct = round((sp_p / 4120.0) * 100.0, 1)
+        us_buffett_diff = round((sp_diff / 4120.0) * 100.0, 1)
         us_buffett_status = "과열(고평가)" if us_buffett_pct >= 150.0 else ("적정(중립)" if us_buffett_pct >= 100.0 else "저평가(매수적기)")
         us_buffett_badge = "🚨 과열" if us_buffett_pct >= 150.0 else ("🟢 적정" if us_buffett_pct >= 100.0 else "💧 저평가")
         
         us_color = get_status_color(us_buffett_status)
-        us_buffett_svg = generate_mini_sparkline_svg([172.0, 175.5, 178.2, 181.0, 185.2, us_buffett_pct], width=48, height=18, color=us_color)
+        us_series = [round((p / 4120.0) * 100.0, 1) for p in series_sp]
+        us_buffett_svg = generate_mini_sparkline_svg(us_series, width=48, height=18, color=us_color)
     except Exception:
-        us_buffett_pct = 188.5
-        us_buffett_diff = -0.1
+        us_buffett_pct = 187.7
+        us_buffett_diff = 1.1
         us_buffett_status = "과열(고평가)"
         us_buffett_badge = "🚨 과열"
         us_color = "#f43f5e"
-        us_buffett_svg = generate_mini_sparkline_svg([172.0, 175.5, 178.2, 181.0, 185.2, 188.5], width=48, height=18, color=us_color)
+        us_buffett_svg = generate_mini_sparkline_svg([172.0, 175.5, 178.2, 181.0, 185.2, 187.7], width=48, height=18, color=us_color)
 
     out['us_buffett'] = {
         'pct': us_buffett_pct, 'diff': us_buffett_diff, 'status_txt': us_buffett_status,
@@ -1255,7 +1303,7 @@ ASSETS = get_static_assets()
 # ====================================================================
 
 @st.cache_data(ttl=14400) # 4시간 메모리/디스크 캐싱 (두 번째 클릭부터 0.1초 완수)
-def bulk_preload_and_clean_market_data(ticker_list, period="2y"):
+def bulk_preload_and_clean_market_data(ticker_list, period="4y"):
     """
     🏆 [오류 0건 + 초고속 배치 엔진 + 100% 데이터 완전성 보장]
     1. 100개 청크 단위 분할 배치 수집으로 2~4초 대량 수집
@@ -1302,6 +1350,7 @@ def bulk_preload_and_clean_market_data(ticker_list, period="2y"):
                         if 'Date' in df_single.columns:
                             df_single = df_single[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
                             if not df_single.empty:
+                                df_single['Date'] = pd.to_datetime(df_single['Date']).dt.tz_localize(None)
                                 cleaned_cache[orig_code] = df_single
                                 cleaned_cache[t_code] = df_single
                 else:
@@ -1319,6 +1368,7 @@ def bulk_preload_and_clean_market_data(ticker_list, period="2y"):
                                 if 'Date' in df_sub.columns:
                                     df_sub = df_sub[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
                                     if not df_sub.empty and len(df_sub) >= 20:
+                                        df_sub['Date'] = pd.to_datetime(df_sub['Date']).dt.tz_localize(None)
                                         cleaned_cache[orig_code] = df_sub
                                         cleaned_cache[t_code] = df_sub
                         except Exception:
@@ -1410,7 +1460,8 @@ def get_raw_daily_data(ticker):
     
     if is_kr_stock:
         try:
-            df = fdr.DataReader(clean_ticker, start='2024-01-01')
+            start_kr = (datetime.now() - pd.DateOffset(years=5)).strftime('%Y-%m-%d')
+            df = fdr.DataReader(clean_ticker, start=start_kr)
             if df is not None and not df.empty:
                 df = df.reset_index()
                 df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
@@ -1426,7 +1477,23 @@ def get_raw_daily_data(ticker):
     for attempt in range(2): # 최대 2회 재시도
         try:
             stock = yf.Ticker(ticker_str)
-            df = stock.history(period="2y", timeout=3.5)
+            df = stock.history(period="4y", timeout=3.5)
+            if df is not None and not df.empty:
+                df = df.reset_index()
+                df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
+                df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+                df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+                df['Date_Only'] = df['Date'].dt.date
+                df = df.drop_duplicates(subset=['Date_Only'], keep='last').drop(columns=['Date_Only']).reset_index(drop=True)
+                return df
+        except Exception:
+            pass
+
+    # 🇺🇸 [3. 미국 주식 및 일반 해외 종목 - 재시도(Retry) 포함 yfinance 2차]
+    for attempt in range(2): # 최대 2회 재시도
+        try:
+            stock = yf.Ticker(ticker_str)
+            df = stock.history(period="4y", timeout=3.5)
             if df is not None and not df.empty:
                 df = df.reset_index()
                 df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
@@ -1692,26 +1759,10 @@ def process_data(df_raw, timeframe, ticker_symbol, skip_news=False):
     df['STD_20'] = df['Close'].rolling(window=20, min_periods=1).std()
     df['Vol_MA_20'] = df['Volume'].rolling(window=20, min_periods=1).mean()
 
-# 💵 [PRO QUANT 교정] 국내주식 거래대금 하한선 150억 원으로 완화 (LG생건 250억 대형주 정상 노출)
     df['Value'] = df['Close'] * df['Volume']
-    turnover_5d = df['Value'].tail(5).mean()
-    is_kr_asset = any(x in ticker_symbol for x in [".KS", ".KQ", "-KRW"])
-    min_turnover = 30_000_000_000 if is_kr_asset else 50_000_000  # 💵 5일 평균 활성 거래대금: 국내 300억 원 / 미국 $5,000만 달러 (약 690억 원)
-
     df['TR'] = np.maximum(df['High'] - df['Low'], np.maximum(abs(df['High'] - df['Close'].shift(1)), abs(df['Low'] - df['Close'].shift(1))))
     df['ATR'] = df['TR'].rolling(window=14, min_periods=1).mean()
     df['ATR_Pct'] = (df['ATR'] / df['Close']) * 100.0
-
-    c_vol_curr = float(df['Volume'].iloc[-1])
-    vol_ma20_curr = float(df['Vol_MA_20'].iloc[-1]) if float(df['Vol_MA_20'].iloc[-1]) > 0 else 1.0
-    rvol_curr = c_vol_curr / vol_ma20_curr
-
-    # ATR% 1.5% 이상이거나 거래량이 1.2배 이상 터진 종목은 필터 통과
-    is_high_volatility = (float(df['ATR_Pct'].iloc[-1]) >= 1.5) or (rvol_curr >= 1.2)
-    is_high_liquidity = turnover_5d >= min_turnover
-
-    if timeframe == 'daily' and not (is_high_volatility and is_high_liquidity):
-        return None, None
     
     # 1. 표준 볼린저 밴드(2.0배) 및 켈트너 채널 연산
     df['BB_Upper'] = df['MA_20'] + (df['STD_20'] * 2.0)
@@ -3206,11 +3257,18 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
     fig.update_xaxes(type='category', showticklabels=False)
     fig.update_yaxes(autorange=True, fixedrange=False)
 
-    # 💡 모바일 터치 시 페이지 스크롤 대신 차트 제스처가 동작하도록 강제하는 CSS
+    # 💡 모바일 터치 시 웹 브라우저 간섭 없이 차트 2손가락 핀치 줌(확대/축소) & 1손가락 패닝이 완벽하게 동작하도록 최적화
     st.markdown("""
     <style>
-    .js-plotly-plot .plotly .main-svg {
+    .js-plotly-plot, .js-plotly-plot .plotly, .js-plotly-plot .plot-container, 
+    .js-plotly-plot .main-svg, .js-plotly-plot .draglayer, .js-plotly-plot .nsewdrag, .js-plotly-plot .overlay {
         touch-action: none !important;
+        -webkit-touch-callout: none !important;
+        -webkit-user-select: none !important;
+        user-select: none !important;
+    }
+    .modebar-container {
+        opacity: 0.85 !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -3241,9 +3299,10 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
     )
     
     chart_config = {
-        'scrollZoom': True,
-        'displayModeBar': True,
-        'responsive': True
+        'scrollZoom': True,                 # 📱 모바일 손가락 2개 핀치 줌(확대/축소) & PC 마우스 휠 줌 활성화
+        'displayModeBar': True,            # 모바일에서도 상단 도구 모음(확대/축소/초기화 버튼) 상시 노출
+        'responsive': True,
+        'doubleClick': 'reset+autosize',   # 📱 모바일 화면을 2번 연속 터치(더블 탭)하면 원래 전체 화면으로 즉시 복귀
     }
 
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{tab_name}", config=chart_config)
@@ -5042,14 +5101,12 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
         hits = []
         total_len = len(df_proc)
 
-        # 💡 [국내 주식: 실행 시점 기준 자동으로 정확히 2년 전부터 탐색]
-        if "국내" in str(m_label):
-            two_years_ago = (datetime.now() - pd.DateOffset(years=2)).strftime('%Y-%m-%d')
-            date_col = pd.to_datetime(df_proc['Date'])
-            target_indices = df_proc[date_col >= two_years_ago].index
-            start_search_idx = target_indices[0] if len(target_indices) > 0 else max(60, total_len - 500)
-        else:
-            start_search_idx = max(60, total_len - 250)
+        # 💡 [국내 & 미국 주식: 실행 시점 기준 3년 치 전수 탐색]
+        three_years_ago_str = (datetime.now() - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
+        three_years_ago_dt = pd.to_datetime(three_years_ago_str)
+        date_col = pd.to_datetime(df_proc['Date']).dt.tz_localize(None)
+        target_indices = df_proc[date_col >= three_years_ago_dt].index
+        start_search_idx = target_indices[0] if len(target_indices) > 0 else max(60, total_len - 750)
         
         last_hit_bar = -99
 
@@ -5334,12 +5391,8 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 curr_dt = pd.to_datetime(df_proc['Date'].iloc[-1]).tz_localize(None)
                 days_passed = len(pd.date_range(start=rec_dt, end=curr_dt, freq='B')) - 1
 
-                # 💡 [매수 기회 보존 방어선] 2차 매수/물타기 구간(-10%~-25% 눌림목) 및 최근 신규 매수 종목은 2% 미만 상승이라도 무조건 유지!
+                # 💡 [매수 기회 보존 방어선] 2차 매수/물타기 구간(-10%~-25% 눌림목) 및 최근 신규 매수 종목
                 is_active_buy = (water_count == 1) or (init_curr_ret <= -10.0 and not is_dead_trend) or (days_passed <= 5 and not is_tp1_done)
-
-                # 최소 2%+ 미달 종목 중 청산/손절/활성 매수가 아닌 단순 미동 종목만 제외
-                if max_wave_ret < 2.0 and not is_dead_trend and not is_trailing_closed and not is_active_buy:
-                    continue
 
                 if rem_qty <= 0:
                     final_ret_pct = round(realized_sum, 1)
@@ -5420,6 +5473,8 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             fmt_curr  = f"₩{display_price:,.0f}" if is_krw else f"${display_price:,.2f}"
             fmt_max   = f"₩{max_so_far:,.0f}" if is_krw else f"${max_so_far:,.2f}"
 
+            # 💡 [진입 시점 순수 기술 점수 (포착 당시 지표로만 산출, 미래수익률 배제)]
+            entry_score = round(70.0 + (108.0 - abs(disp_20 - 101.5)) * 0.15 + (rsi_val * 0.1), 1)
             # 💡 [일·주·월봉 3대 차트 결합 1년 상승 잠재력 점수 & 1년 실제 목표 수익률 산출]
             mtf_score = round(70.0 + (108.0 - abs(disp_20 - 101.5)) * 0.15 + (rsi_val * 0.1) + (max_ret_pct * 0.25), 1)
             target_1y_pct = round(max(35.0, max_ret_pct * 1.45 + 12.0), 1)
@@ -5438,6 +5493,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 "최대 수익률 (%)": max_ret_pct,
                 "최대 수익률 도달일": max_date_str,
                 "1년 목표 수익률 (%)": target_1y_pct,
+                "entry_score": entry_score,
                 "mtf_score": mtf_score,
                 "상태": status_txt,
                 "raw_curr_ret": final_ret_pct
@@ -5830,10 +5886,10 @@ def bg_scan_worker_midterm(assets_dict):
     # ⚡ [수정 핵심 1] 전 시장 종목 초고속 배치 수집 (IP 차단 방지 및 초고속 완료)
     status_box.markdown("🚀 **전 시장 종목 시세 초고속 실시간 배치 수집 중...**")
     tickers = [t[1] for t in all_tasks]
-    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="2y")
+    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="4y")
 
-    status_box.markdown("🚀 **중장기 100%+ 주식 정예주 정밀 퀀트 분석 중...**")
-    res_kr, res_us = [], []
+    status_box.markdown("🚀 **과거 3년 정예 시그널 초고속 전수 스캔 중...**")
+    historical_hits = []
     processed = 0
 
     def midterm_task(item_tuple):
@@ -5931,9 +5987,9 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     # ⚡ [수정 핵심 2] 500개 전 종목 초고속 배치 수집 (10분 ➔ 3초 완료)
     status_box.markdown("🚀 **전 시장 종목 시세 초고속 실시간 배치 수집 중...**")
     tickers = [t[2] for t in all_tasks]
-    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="2y")
+    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="4y")
 
-    status_box.markdown("🚀 **과거 1년 정예 시그널 초고속 전수 스캔 중...**")
+    status_box.markdown("🚀 **과거 3년 정예 시그널 초고속 전수 스캔 중...**")
     historical_hits = []
     processed = 0
 
@@ -5965,7 +6021,7 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
             seen_hit_keys.add(h_key)
             dedup_hits.append(h)
 
-# 🏛️ [국내주 200일선/상대강도 vs 미국주 메가캡/신고가 모멘텀 전용 랭킹 & 날짜별 3종목 엄선]
+# 🏛️ [국내주 200일선/상대강도 vs 미국주 메가캡/신고가 모멘텀 전용 랭킹 & 날짜별 5종목 엄선]
     US_MEGACAP_MOATS = {
         "NVDA", "MSFT", "AAPL", "AMZN", "GOOGL", "GOOG", "META", "TSLA",
         "AVGO", "LLY", "ASML", "COST", "JPM", "UNH", "V", "MA", "AMD",
@@ -5976,22 +6032,36 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
         ticker_raw = str(item.get('티커', '')).upper().strip()
         is_kr = ticker_raw.endswith('.KS') or ticker_raw.endswith('.KQ') or "국내" in str(item.get('시장', ''))
         status_txt = str(item.get('상태', ''))
-        mtf_val = float(item.get('mtf_score', 0.0))
+        # 🎯 포착 시점 순수 지표 점수(entry_score) 사용 -> 미래 수익률로 인한 과거 추천 순위 역전 원천 차단
+        entry_val = float(item.get('entry_score', item.get('mtf_score', 0.0)))
 
         if is_kr:
-            # 🇰🇷 [국내주]: 1순위 상대강도 상위 5% (+50점) ➔ 2순위 200일선 바닥 턴어라운드 (+30점) ➔ MTF 점수
+            # 🇰🇷 [국내주]: 1순위 상대강도 상위 5% (+50점) ➔ 2순위 200일선 바닥 턴어라운드 (+30점) ➔ 진입 기술점수
             rs_score = 50.0 if "상대강도" in status_txt else 0.0
             turnaround_score = 30.0 if "신규 매수" in status_txt else 0.0
-            return rs_score + turnaround_score + mtf_val
+            return rs_score + turnaround_score + entry_val
         else:
-            # 🇺🇸 [미국주]: 1순위 52주 신고가 상대강도 (+45점) ➔ 2순위 메가캡 독점 해자 (+35점) ➔ 바닥 탈출 (+15점) ➔ MTF 점수
+            # 🇺🇸 [미국주]: 1순위 52주 신고가 상대강도 (+45점) ➔ 2순위 메가캡 독점 해자 (+35점) ➔ 바닥 탈출 (+15점) ➔ 진입 기술점수
             ticker_clean = ticker_raw.split('.')[0].split('-')[0].strip()
             rs_score = 45.0 if "상대강도" in status_txt else 0.0
             moat_score = 35.0 if ticker_clean in US_MEGACAP_MOATS else 0.0
             buy_score = 15.0 if "신규 매수" in status_txt else 0.0
-            return rs_score + moat_score + buy_score + (mtf_val * 0.5)
+            return rs_score + moat_score + buy_score + (entry_val * 0.5)
 
+    # 🔒 [과거 추천 영구 고정 DB 연동]
     from collections import defaultdict
+    existing_db_map = defaultdict(list)
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT rec_date, market, name, ticker, entry_price FROM midterm_recommendations")
+        for r_date, r_mkt, r_name, r_tk, r_ent in cursor.fetchall():
+            m_clean = "국내" if "국내" in str(r_mkt) else "미국"
+            existing_db_map[(str(r_date).strip(), m_clean)].append((str(r_tk).strip().upper(), r_name, r_ent))
+        conn.close()
+    except Exception:
+        pass
+
     market_date_groups = defaultdict(list)
     for h in dedup_hits:
         group_key = (h['추천 포착 날짜'], "국내" if "국내" in str(h.get('시장', '')) else "미국")
@@ -5999,13 +6069,37 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
 
     filtered_hits = []
     for g_key, items in market_date_groups.items():
-        sorted_items = sorted(items, key=calc_separated_priority, reverse=True)
-        filtered_hits.extend(sorted_items[:3])  # 🎯 날짜/시장당 최우선 3개 종목만 엄선
+        date_str, m_type = g_key
+        existing_locked = existing_db_map.get(g_key, [])
+        locked_tickers = [x[0] for x in existing_locked]
+
+        # 1. DB에 이미 추천으로 저장된 과거 종목들은 100% 영구 고정 유지 (Lock)
+        selected_for_date = []
+        selected_tickers = set()
+
+        for locked_tk in locked_tickers:
+            if locked_tk not in selected_tickers:
+                matched = [it for it in items if str(it.get('티커', '')).strip().upper() == locked_tk]
+                if matched:
+                    selected_for_date.append(matched[0])
+                    selected_tickers.add(locked_tk)
+
+        # 2. 날짜/시장당 최대 5개까지 포착 당시 기술점수 순으로 보충 (3개 ➔ 5개 텀 확장)
+        remaining_candidates = [item for item in items if str(item.get('티커', '')).strip().upper() not in selected_tickers]
+        sorted_remaining = sorted(remaining_candidates, key=calc_separated_priority, reverse=True)
+
+        needed = 5 - len(selected_for_date)
+        if needed > 0:
+            for item in sorted_remaining[:needed]:
+                selected_for_date.append(item)
+                selected_tickers.add(str(item.get('티커', '')).strip().upper())
+
+        filtered_hits.extend(selected_for_date)
 
     historical_hits = filtered_hits
 
     progress_bar.progress(1.0)
-    status_box.success(f"✅ 초고속 과거 1년 스캔 완료! 총 {len(historical_hits)}건의 정예 추천 포착 기록을 찾았습니다.")
+    status_box.success(f"✅ 초고속 과거 3년 스캔 완료! 총 {len(historical_hits)}건의 정예 추천 포착 기록을 찾았습니다.")
 
     if historical_hits:
         conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -6103,25 +6197,25 @@ with main_tab2:
 </div>
 </div>""", unsafe_allow_html=True)
 
-    st.markdown("#### 과거 1년 전체 종목 추천 날짜 & 수익률 전수 조사")
-    st.markdown("<div style='color: #38bdf8; font-weight: bold; font-size: 14px; margin-bottom: 10px;'>✨ 과거 1년 내 포착된 종목과 추천 날짜 및 현재/최고 수익률 표 ✨</div>", unsafe_allow_html=True)
+    st.markdown("#### 과거 3년 전체 종목 추천 날짜 & 수익률 전수 조사")
+    st.markdown("<div style='color: #38bdf8; font-weight: bold; font-size: 14px; margin-bottom: 10px;'>✨ 과거 3년 내 포착된 종목과 추천 날짜 및 현재/최고 수익률 표 ✨</div>", unsafe_allow_html=True)
 
     # 💡 국내 주식 / 미국 주식 개별 스캔 및 전체 전수 스캔 분할 선택 버튼
     col_btn_kr, col_btn_us, col_btn_all = st.columns(3)
     with col_btn_kr:
-        if st.button("🇰🇷 국내 주식 과거 2년 전수 스캔", key="btn_history_kr_scan", use_container_width=True):
+        if st.button("🇰🇷 국내 주식 과거 3년 전수 스캔", key="btn_history_kr_scan", use_container_width=True):
             init_midterm_db()
             history_results = scan_all_historical_midterm_signals(ASSETS, target_market="국내")
             if history_results:
                 st.session_state['history_scan_table'] = history_results
     with col_btn_us:
-        if st.button("🇺🇸 미국 주식 과거 1년 전수 스캔", key="btn_history_us_scan", use_container_width=True):
+        if st.button("🇺🇸 미국 주식 과거 3년 전수 스캔", key="btn_history_us_scan", use_container_width=True):
             init_midterm_db()
             history_results = scan_all_historical_midterm_signals(ASSETS, target_market="미국")
             if history_results:
                 st.session_state['history_scan_table'] = history_results
     with col_btn_all:
-        if st.button("🔥 전체(국내+미국) 1년 전수 스캔", key="btn_history_all_scan", use_container_width=True):
+        if st.button("🔥 전체(국내+미국) 3년 전수 스캔", key="btn_history_all_scan", use_container_width=True):
             init_midterm_db()
             history_results = scan_all_historical_midterm_signals(ASSETS, target_market="전체")
             if history_results:
@@ -6161,7 +6255,7 @@ with main_tab2:
 
         st.markdown(f"""
         <div style="background-color: #1e2230; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 15px;">
-            <div style="font-size: 13px; color: #ffffff; font-weight: bold; margin-bottom: 6px;">📊 과거 1년 전수 포착 성과 종합 보고서</div>
+            <div style="font-size: 13px; color: #ffffff; font-weight: bold; margin-bottom: 6px;">📊 과거 3년 전수 포착 성과 종합 보고서</div>
             <div style="display: flex; justify-content: space-around; text-align: center;">
                 <div><span style="font-size: 11px; color: #94a3b8;">포착 건수</span><br><b style="font-size: 15px; color: #ffffff;">{total_hits}건</b></div>
                 <div><span style="font-size: 11px; color: #94a3b8;">승률</span><br><b style="font-size: 15px; color: #10b981;">{win_rate:.1f}%</b></div>
@@ -6182,14 +6276,14 @@ with main_tab2:
 
         sort_col = 'mtf_score' if 'mtf_score' in active_buys.columns else '최대 수익률 (%)'
 
-        kr_active = active_buys[active_buys['시장'].str.contains('국내', na=False)].sort_values(by=[sort_col], ascending=False).head(3)
-        us_active = active_buys[active_buys['시장'].str.contains('미국', na=False)].sort_values(by=[sort_col], ascending=False).head(3)
+        kr_active = active_buys[active_buys['시장'].str.contains('국내', na=False)].sort_values(by=[sort_col], ascending=False).head(5)
+        us_active = active_buys[active_buys['시장'].str.contains('미국', na=False)].sort_values(by=[sort_col], ascending=False).head(5)
 
         has_kr = not kr_active.empty
         has_us = not us_active.empty
 
-        medals = ["🥇 1위", "🥈 2위", "🥉 3위"]
-        rank_colors = ["#f59e0b", "#94a3b8", "#b45309"]
+        medals = ["🥇 1위", "🥈 2위", "🥉 3위", "🎖️ 4위", "🎖️ 5위"]
+        rank_colors = ["#f59e0b", "#94a3b8", "#b45309", "#38bdf8", "#a855f7"]
 
         if has_kr or has_us:
             st.markdown("##### 🔥 최근 1개월 내 주도 섹터 최고 상승 잠재주")
@@ -6197,11 +6291,12 @@ with main_tab2:
         if has_kr:
             st.markdown("""
             <div style="background-color: #1e293b; padding: 10px 14px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 10px;">
-                <b style="color: #38bdf8; font-size: 15px;">🇰🇷 국내 주도 섹터 Top 1·2·3 정예 추천주 (최근 1개월)</b>
+                <b style="color: #38bdf8; font-size: 15px;">🇰🇷 국내 주도 섹터 Top 1~5 정예 추천주 (최근 1개월)</b>
             </div>
             """, unsafe_allow_html=True)
-            cols_kr = st.columns(3)
-            for idx, (_, row_item) in enumerate(kr_active.head(3).iterrows()):
+            n_kr = min(len(kr_active), 5)
+            cols_kr = st.columns(n_kr) if n_kr > 0 else []
+            for idx, (_, row_item) in enumerate(kr_active.head(5).iterrows()):
                 with cols_kr[idx]:
                     s_name = row_item['종목명']
                     s_ent  = row_item['추천 진입가']
@@ -6219,10 +6314,13 @@ with main_tab2:
                         ret_color = "#94a3b8"
                         ret_txt = "0.0%"
 
+                    badge_rank = medals[idx] if idx < len(medals) else f"🎖️ {idx+1}위"
+                    color_rank = rank_colors[idx] if idx < len(rank_colors) else "#38bdf8"
+
                     st.markdown(f"""
-                    <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 8px; border: 1px solid {rank_colors[idx]}; margin-bottom: 12px; min-height: 120px;">
+                    <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 8px; border: 1px solid {color_rank}; margin-bottom: 12px; min-height: 120px;">
                         <div style="margin-bottom: 6px;">
-                            <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name} <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
+                            <span style="font-weight: bold; color: {color_rank}; font-size: 14px;">{badge_rank} {s_name} <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
                         </div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">📊 현재 진입 수익률: <b style="color: {ret_color}; font-size: 13px;">{ret_txt}</b></div>
@@ -6233,11 +6331,12 @@ with main_tab2:
         if has_us:
             st.markdown("""
             <div style="background-color: #1e293b; padding: 10px 14px; border-radius: 8px; border: 1px solid #334155; margin-top: 10px; margin-bottom: 10px;">
-                <b style="color: #f43f5e; font-size: 15px;">🇺🇸 미국 주도 섹터 Top 1·2·3 정예 추천주 (최근 1개월)</b>
+                <b style="color: #f43f5e; font-size: 15px;">🇺🇸 미국 주도 섹터 Top 1~5 정예 추천주 (최근 1개월)</b>
             </div>
             """, unsafe_allow_html=True)
-            cols_us = st.columns(3)
-            for idx, (_, row_item) in enumerate(us_active.head(3).iterrows()):
+            n_us = min(len(us_active), 5)
+            cols_us = st.columns(n_us) if n_us > 0 else []
+            for idx, (_, row_item) in enumerate(us_active.head(5).iterrows()):
                 with cols_us[idx]:
                     s_name = row_item['종목명']
                     s_ent  = row_item['추천 진입가']
@@ -6255,10 +6354,13 @@ with main_tab2:
                         ret_color = "#94a3b8"
                         ret_txt = "0.0%"
 
+                    badge_rank = medals[idx] if idx < len(medals) else f"🎖️ {idx+1}위"
+                    color_rank = rank_colors[idx] if idx < len(rank_colors) else "#f43f5e"
+
                     st.markdown(f"""
-                    <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 8px; border: 1px solid {rank_colors[idx]}; margin-bottom: 12px; min-height: 120px;">
+                    <div style="background-color: #0f172a; padding: 12px 14px; border-radius: 8px; border: 1px solid {color_rank}; margin-bottom: 12px; min-height: 120px;">
                         <div style="margin-bottom: 6px;">
-                            <span style="font-weight: bold; color: {rank_colors[idx]}; font-size: 15px;">{medals[idx]} {s_name} <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
+                            <span style="font-weight: bold; color: {color_rank}; font-size: 14px;">{badge_rank} {s_name} <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
                         </div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">📊 현재 진입 수익률: <b style="color: {ret_color}; font-size: 13px;">{ret_txt}</b></div>
@@ -6284,7 +6386,7 @@ with main_tab2:
             if '최대 수익률 도달일' in table_df.columns:
                 table_df.loc[is_today_mask, '최대 수익률 도달일'] = today_date_str
 
-        st.markdown("##### 🏆 과거 1년 포착 종목 순위표 (수익률 내림차순)")
+        st.markdown("##### 🏆 과거 3년 포착 종목 순위표 (수익률 내림차순)")
 
         # 🌟 [사용자 요청 3] 필터 라디오 명칭 100% 매칭: 1차 매수 / 2차 매수 / 익절 방어선 / 전량 매도
         radio_opts = [
@@ -6347,4 +6449,4 @@ with main_tab2:
             st.markdown(f"🗓️ **{selected_date_filter} 포착 종목 리스트:**")
             st.dataframe(filtered_df, use_container_width=True, hide_index=True)
     else:
-        st.info("💡 위의 [과거 1년 추천 날짜/수익률 전체 전수 스캔] 버튼을 누르면 전체 주식의 추천 날짜와 수익률 표가 완성됩니다.")
+        st.info("💡 위의 [과거 3년 추천 날짜/수익률 전체 전수 스캔] 버튼을 누르면 전체 주식의 추천 날짜와 수익률 표가 완성됩니다.")
