@@ -5092,6 +5092,27 @@ def classify_stock_class(df_sub, ticker):
     except Exception:
         return "Class B"
 
+def get_trailing_stop_line(peak_ret):
+    """
+    🎯 [사용자 맞춤형 50% 락인 규칙적 익절 방어선] (Trailing Stop Tiers):
+    • +2.0% 도달 시  ➔ +0.5% 익절선 고정 (수수료 제외 무손실 원금 방어)
+    • +10.0% 도달 시 ➔ +5.0% 익절선 확정 (수익의 50% 고정 확보)
+    • +20.0% 도달 시 ➔ +10.0% 익절선 확정 (수익의 50% 고정 확보)
+    • +30.0% 도달 시 ➔ +15.0% 익절선 확정 (수익의 50% 고정 확보)
+    • +40.0% 도달 시 ➔ +20.0% 익절선 확정 (수익의 50% 고정 확보)
+    • +50.0% 도달 시 ➔ +25.0% 익절선 확정
+    • +60.0% 도달 시 ➔ +30.0% 익절선 확정
+    • +80.0% 도달 시 ➔ +40.0% 익절선 확정
+    • +100.0% 도달 시 ➔ +50.0% 익절선 확정
+    """
+    if peak_ret < 2.0:
+        return None
+    elif peak_ret < 10.0:
+        return 0.5
+    else:
+        tier = int(peak_ret // 10) * 10
+        return round(tier * 0.5, 1)
+
 def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
     if ctx_obj is not None: add_script_run_ctx(ctx=ctx_obj)
     m_label, name, ticker = task_tuple[:3]
@@ -5116,9 +5137,15 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
         df_proc['High_52W'] = df_proc['High'].rolling(250, min_periods=1).max()
         df_proc['OBV_Max_60'] = df_proc['OBV'].rolling(60, min_periods=1).max()
 
-        ma20_s = df_proc['MA_20'] if 'MA_20' in df_proc.columns else df_proc['Close']
-        ma60_s = df_proc['MA_60'] if 'MA_60' in df_proc.columns else df_proc['Close']
-        ma200_s = df_proc['MA_200'] if 'MA_200' in df_proc.columns else df_proc['Close']
+        df_proc['MA_20'] = df_proc['Close'].rolling(20, min_periods=1).mean()
+        df_proc['MA_60'] = df_proc['Close'].rolling(60, min_periods=1).mean()
+        df_proc['MA_120'] = df_proc['Close'].rolling(120, min_periods=1).mean()
+        df_proc['MA_200'] = df_proc['Close'].rolling(200, min_periods=1).mean()
+
+        ma20_s = df_proc['MA_20']
+        ma60_s = df_proc['MA_60']
+        ma120_s = df_proc['MA_120']
+        ma200_s = df_proc['MA_200']
 
         cond_52w = (df_proc['Close'] >= df_proc['High_52W'] * 0.90)
         cond_obv = (df_proc['OBV'] >= df_proc['OBV_Max_60'] * 0.92)
@@ -5324,6 +5351,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 w1, w2, w3 = (0.40, 0.30, 0.20) if is_kr_stock else (0.30, 0.30, 0.20)
                 
                 hit_t1, hit_t2, hit_t3 = False, False, False
+                hit_ma20, hit_ma60, hit_ma120, hit_ma200 = False, False, False, False
                 realized_gain = 0.0
                 rem_weight = 1.0
 
@@ -5334,9 +5362,6 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 exit_date = '-'
                 exit_ret = 0.0
 
-                trailing_threshold = 12.0 if is_kr_stock else 18.0
-                trailing_trigger_ret = 15.0 if is_kr_stock else 20.0
-
                 for idx_bar, row_bar in after_df.iterrows():
                     c_h = float(row_bar['High'])
                     c_l = float(row_bar['Low'])
@@ -5345,6 +5370,11 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                     if is_us_stock:
                         raw_bar_dt = raw_bar_dt + pd.Timedelta(days=1)
                     c_dt = raw_bar_dt.strftime('%Y-%m-%d')
+
+                    ma20 = float(row_bar['MA_20']) if 'MA_20' in row_bar and not pd.isna(row_bar['MA_20']) else c_c
+                    ma60 = float(row_bar['MA_60']) if 'MA_60' in row_bar and not pd.isna(row_bar['MA_60']) else c_c
+                    ma120 = float(row_bar['MA_120']) if 'MA_120' in row_bar and not pd.isna(row_bar['MA_120']) else c_c
+                    ma200 = float(row_bar['MA_200']) if 'MA_200' in row_bar and not pd.isna(row_bar['MA_200']) else c_c
 
                     # 최고점 갱신
                     if c_h > peak_p:
@@ -5357,38 +5387,64 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                     c_l_ret = ((c_l - entry_p) / entry_p) * 100.0
 
                     # 1. 구조적 손절 체크 (-7.0% 이하 도달 시)
-                    if not hit_t1 and c_l_ret <= -7.0:
+                    if not hit_t1 and peak_ret < 2.0 and c_l_ret <= -7.0:
                         is_closed = True
                         exit_date = c_dt
                         exit_ret = -7.0
                         status_txt = f"🚨 손절 청산 완료 ({c_dt})"
                         break
 
-                    # 2. 1차 목표가 도달 체크
+                    # 2. 목표가 도달 체크 (1차/2차/3차)
                     if not hit_t1 and c_h_ret >= t1_pct:
                         hit_t1 = True
                         realized_gain += (w1 * t1_pct)
                         rem_weight -= w1
 
-                    # 3. 2차 목표가 도달 체크
                     if hit_t1 and not hit_t2 and c_h_ret >= t2_pct:
                         hit_t2 = True
                         realized_gain += (w2 * t2_pct)
                         rem_weight -= w2
 
-                    # 4. 3차 목표가 도달 체크
                     if hit_t2 and not hit_t3 and c_h_ret >= t3_pct:
                         hit_t3 = True
                         realized_gain += (w3 * t3_pct)
                         rem_weight -= w3
 
-                    # 5. 익절 방어선 및 트레일링 스탑 체크
-                    if peak_ret >= trailing_trigger_ret:
-                        drop_from_peak = ((c_c - peak_p) / peak_p) * 100.0
-                        if drop_from_peak <= -trailing_threshold or (hit_t1 and c_c_ret <= 0.5):
+                    # 3. 🎯 이평선(20, 60, 120, 200일선) 지지 이탈 시 단계별 분할 매도
+                    if peak_ret >= 5.0 and rem_weight > 0.05:
+                        if not hit_ma20 and c_c < ma20:
+                            hit_ma20 = True
+                            w_sell = min(0.30, rem_weight)
+                            realized_gain += (w_sell * c_c_ret)
+                            rem_weight -= w_sell
+
+                        if hit_ma20 and not hit_ma60 and c_c < ma60 and rem_weight > 0.05:
+                            hit_ma60 = True
+                            w_sell = min(0.30, rem_weight)
+                            realized_gain += (w_sell * c_c_ret)
+                            rem_weight -= w_sell
+
+                        if hit_ma60 and not hit_ma120 and c_c < ma120 and rem_weight > 0.05:
+                            hit_ma120 = True
+                            w_sell = min(0.20, rem_weight)
+                            realized_gain += (w_sell * c_c_ret)
+                            rem_weight -= w_sell
+
+                        if hit_ma120 and not hit_ma200 and c_c < ma200:
+                            hit_ma200 = True
                             is_closed = True
                             exit_date = c_dt
-                            final_bar_ret = ((c_c - entry_p) / entry_p) * 100.0
+                            exit_ret = realized_gain + rem_weight * c_c_ret
+                            status_txt = f"🛡️ 200일선 이탈 전량 청산 완료 ({c_dt})"
+                            break
+
+                    # 4. 🎯 사용자 지정 50% 락인 규칙적 익절선 (Trailing Stop) 체크
+                    stop_line = get_trailing_stop_line(peak_ret)
+                    if stop_line is not None:
+                        if c_c_ret <= stop_line or c_l_ret <= (stop_line - 0.5):
+                            is_closed = True
+                            exit_date = c_dt
+                            final_bar_ret = max(stop_line, c_c_ret)
                             exit_ret = realized_gain + rem_weight * final_bar_ret
                             status_txt = f"🛡️ 익절 청산 완료 ({c_dt})"
                             break
@@ -5402,7 +5458,13 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                     c_ret = ((curr_p - entry_p) / entry_p) * 100.0
                     blended_ret = round(realized_gain + rem_weight * c_ret, 1)
 
-                    if hit_t3:
+                    if hit_ma120:
+                        status_txt = f"📉 120일선 이탈 3차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
+                    elif hit_ma60:
+                        status_txt = f"📉 60일선 이탈 2차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
+                    elif hit_ma20:
+                        status_txt = f"📉 20일선 이탈 1차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
+                    elif hit_t3:
                         status_txt = f"🎉 3차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)" if is_kr_stock else f"🚀 3차 매도 후 텐베거 롱런 (+{blended_ret:+.1f}%)"
                     elif hit_t2:
                         status_txt = f"💰 2차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
@@ -6144,35 +6206,55 @@ with main_tab2:
     
     st.markdown("""<div style="background-color: #0f172a; border: 1px solid #3b82f6; padding: 16px 20px; border-radius: 10px; margin: 10px 0 20px 0; color: #f8fafc;">
 <div style="font-size: 15px; font-weight: bold; color: #60a5fa; margin-bottom: 10px;">
-🛡️ [투자 전문가 가이드] 국내 vs 미국 퀀트 단계별 분할 매도 & 트레일링 스탑 원칙
+🛡️ [규칙적 익절선 & 트레일링 스탑] 구간별 수익 방어선 및 분할 매도 원칙
 </div>
 <div style="font-size: 13px; line-height: 1.7; color: #cbd5e1;">
+
+<div style="background: rgba(16, 185, 129, 0.08); border: 1px solid #10b981; padding: 12px 14px; border-radius: 8px; margin-bottom: 12px;">
+    <b style="color: #34d399; font-size: 14px;">🎯 [사용자 맞춤형 50% 락인 규칙적 익절선 (Trailing Stop)]</b><br>
+    • <b>[+2.0% ~ +9.9% 도달 시]</b> ➔ <b>+0.5% 익절선 확정</b> (수수료/세금 제외 무손실 원금 방어)<br>
+    • <b>[+10.0% ~ +19.9% 도달 시]</b> ➔ <b>+5.0% 익절선 확정</b> (10% 수익의 50% 고정 확보)<br>
+    • <b>[+20.0% ~ +29.9% 도달 시]</b> ➔ <b>+10.0% 익절선 확정</b> (20% 수익의 50% 고정 확보)<br>
+    • <b>[+30.0% ~ +39.9% 도달 시]</b> ➔ <b>+15.0% 익절선 확정</b> (30% 수익의 50% 고정 확보)<br>
+    • <b>[+40.0% ~ +49.9% 도달 시]</b> ➔ <b>+20.0% 익절선 확정</b><br>
+    • <b>[+50.0% ~ +59.9% 도달 시]</b> ➔ <b>+25.0% 익절선 확정</b><br>
+    • <b>[+100.0% 이상 (대파동)]</b> ➔ <b>+50.0%+ 익절선 확정</b> (수익의 50% 기계적 락인)
+</div>
+
+<div style="background: rgba(168, 85, 247, 0.08); border: 1px solid #a855f7; padding: 12px 14px; border-radius: 8px; margin-bottom: 12px;">
+    <b style="color: #c084fc; font-size: 14px;">📉 [이평선 지지 이탈 시 단계별 분할 매도 원칙 (20 / 60 / 120 / 200일선)]</b><br>
+    • <b>1차 이평 이탈 (20일선 깨짐):</b> 단기 탄력 둔화 ➔ <b>물량 30% 분할 매도</b> (수익 챙김)<br>
+    • <b>2차 이평 이탈 (60일선 깨짐):</b> 중기 수급 이탈 ➔ <b>물량 30% 추가 매도</b> (누적 60% 실현)<br>
+    • <b>3차 이평 이탈 (120일선 깨짐):</b> 대세 지지선 붕괴 ➔ <b>물량 20% 추가 매도</b> (누적 80% 실현)<br>
+    • <b>4차 최종 이탈 (200일선 깨짐):</b> 장기 경기선 이탈 ➔ <b>잔여 20% 전량 청산 완료</b> (🛡️ 청산 마감)
+</div>
+
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 12px;">
     <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid #3b82f6; padding: 12px; border-radius: 8px;">
-        <b style="color: #38bdf8; font-size: 14px;">🇰🇷 국내 주식 3단계 분할 익절 (순환매형)</b><br>
-        • <b>1차 매도:</b> <b>+12%</b> 도달 시 <b>물량 40% 익절</b> (원금 회수 및 본절 방어선 확정)<br>
-        • <b>2차 매도:</b> <b>+25%</b> 도달 시 <b>물량 30% 익절</b> (누적 70% 수익 확정)<br>
-        • <b>3차 매도:</b> <b>+50%</b> 도달 시 <b>물량 20% 익절</b> (누적 90% 확정, 잔여 10% 텐베거 추적)<br>
-        • <b>트레일링 청산:</b> 최고점 대비 <b>-12% 이상 반락</b> 시 잔여 물량 전량 청산 완료
+        <b style="color: #38bdf8; font-size: 13px;">🇰🇷 국내 주식 3단계 목표 익절</b><br>
+        • <b>1차:</b> +12% 도달 시 <b>40% 익절</b><br>
+        • <b>2차:</b> +25% 도달 시 <b>30% 익절</b><br>
+        • <b>3차:</b> +50% 도달 시 <b>20% 익절</b> (잔여 10% 롱런)
     </div>
     <div style="background: rgba(244, 63, 94, 0.08); border: 1px solid #f43f5e; padding: 12px; border-radius: 8px;">
-        <b style="color: #fb7185; font-size: 14px;">🇺🇸 미국 주식 3단계 분할 익절 (추세추종형)</b><br>
-        • <b>1차 매도:</b> <b>+20%</b> 도달 시 <b>물량 30% 익절</b> (심리적 안정 확보)<br>
-        • <b>2차 매도:</b> <b>+50%</b> 도달 시 <b>물량 30% 익절</b> (누적 60% 수익 확정)<br>
-        • <b>3차 매도:</b> <b>+100%</b> 도달 시 <b>물량 20% 익절</b> (누적 80% 확정, 잔여 20% 대파동 롱런)<br>
-        • <b>트레일링 청산:</b> 최고점 대비 <b>-18% 이상 반락</b> 시 잔여 물량 전량 청산 완료
+        <b style="color: #fb7185; font-size: 13px;">🇺🇸 미국 주식 3단계 목표 익절</b><br>
+        • <b>1차:</b> +20% 도달 시 <b>30% 익절</b><br>
+        • <b>2차:</b> +50% 도달 시 <b>30% 익절</b><br>
+        • <b>3차:</b> +100% 도달 시 <b>20% 익절</b> (잔여 20% 롱런)
     </div>
 </div>
+
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
     <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid #ef4444; padding: 10px 12px; border-radius: 8px;">
         <b style="color: #f87171;">📌 ❌ 무조건 손절(Cut) 원칙 (-7.0%)</b><br>
-        진입 후 1차 익절 전 종가 기준 <b>-7.0% 이하 도달 시</b> 기계적으로 손절하여 계좌 파산 방지
+        진입 후 1차 익절선(+2%) 도달 전 종가 <b>-7.0% 이하 시</b> 즉시 기계적 손절
     </div>
     <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid #10b981; padding: 10px 12px; border-radius: 8px;">
         <b style="color: #34d399;">📌 🌊 50:50 전략적 분할 매수 원칙</b><br>
         추천일 <b>1차 50% 진입</b> 후, <b>-15%~-20% 대파동 지지선</b> 도달 시 <b>2차 50% 분할 투입</b>
     </div>
 </div>
+
 </div>
 </div>""", unsafe_allow_html=True)
 
