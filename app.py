@@ -5299,7 +5299,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             if calc_entry <= 0: calc_entry = round(c_close, 2)
 
             # ====================================================================
-            # 🎯 [실제 체결가 및 실시간/최고 수익률 정밀 연산 엔진]
+            # 🎯 [실제 체결가 및 분할 익절/트레일링 스탑 정밀 시뮬레이션 엔진]
             # ====================================================================
             after_df = df_proc.iloc[pos + 1:]
             if not after_df.empty:
@@ -5312,42 +5312,124 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             else:
                 entry_p = calc_entry
 
-            curr_p = float(df_proc['Close'].iloc[-1])
             avg_price = entry_p
-            display_price = curr_p
+            is_kr_stock = not is_us_stock
 
             if not after_df.empty:
-                max_so_far = float(after_df['High'].max())
-                min_so_far = float(after_df['Low'].min())
-                
-                max_idx = after_df['High'].idxmax()
-                max_raw_dt = pd.to_datetime(df_proc.loc[max_idx, 'Date'])
-                if is_us_stock:
-                    max_raw_dt = max_raw_dt + pd.Timedelta(days=1)
-                max_date_str = max_raw_dt.strftime('%Y-%m-%d')
+                # 🎯 국내 vs 미국 시장별 분할 익절 및 트레일링 스탑 파라미터 분리
+                t1_pct = 12.0 if is_kr_stock else 20.0
+                t2_pct = 25.0 if is_kr_stock else 50.0
+                t3_pct = 50.0 if is_kr_stock else 100.0
 
-                # 실제 가격 기반 순수 수익률 계산 (현재 수익률 & 기간 최고 수익률)
-                final_ret_pct = round(((curr_p - avg_price) / avg_price) * 100.0, 1)
-                max_ret_pct   = round(((max_so_far - avg_price) / avg_price) * 100.0, 1)
+                w1, w2, w3 = (0.40, 0.30, 0.20) if is_kr_stock else (0.30, 0.30, 0.20)
+                
+                hit_t1, hit_t2, hit_t3 = False, False, False
+                realized_gain = 0.0
+                rem_weight = 1.0
+
+                peak_p = entry_p
+                peak_ret = 0.0
+                peak_date = hit_date_str
+                is_closed = False
+                exit_date = '-'
+                exit_ret = 0.0
+
+                trailing_threshold = 12.0 if is_kr_stock else 18.0
+                trailing_trigger_ret = 15.0 if is_kr_stock else 20.0
+
+                for idx_bar, row_bar in after_df.iterrows():
+                    c_h = float(row_bar['High'])
+                    c_l = float(row_bar['Low'])
+                    c_c = float(row_bar['Close'])
+                    raw_bar_dt = pd.to_datetime(row_bar['Date'])
+                    if is_us_stock:
+                        raw_bar_dt = raw_bar_dt + pd.Timedelta(days=1)
+                    c_dt = raw_bar_dt.strftime('%Y-%m-%d')
+
+                    # 최고점 갱신
+                    if c_h > peak_p:
+                        peak_p = c_h
+                        peak_ret = ((peak_p - entry_p) / entry_p) * 100.0
+                        peak_date = c_dt
+
+                    c_h_ret = ((c_h - entry_p) / entry_p) * 100.0
+                    c_c_ret = ((c_c - entry_p) / entry_p) * 100.0
+                    c_l_ret = ((c_l - entry_p) / entry_p) * 100.0
+
+                    # 1. 구조적 손절 체크 (-7.0% 이하 도달 시)
+                    if not hit_t1 and c_l_ret <= -7.0:
+                        is_closed = True
+                        exit_date = c_dt
+                        exit_ret = -7.0
+                        status_txt = f"🚨 손절 청산 완료 ({c_dt})"
+                        break
+
+                    # 2. 1차 목표가 도달 체크
+                    if not hit_t1 and c_h_ret >= t1_pct:
+                        hit_t1 = True
+                        realized_gain += (w1 * t1_pct)
+                        rem_weight -= w1
+
+                    # 3. 2차 목표가 도달 체크
+                    if hit_t1 and not hit_t2 and c_h_ret >= t2_pct:
+                        hit_t2 = True
+                        realized_gain += (w2 * t2_pct)
+                        rem_weight -= w2
+
+                    # 4. 3차 목표가 도달 체크
+                    if hit_t2 and not hit_t3 and c_h_ret >= t3_pct:
+                        hit_t3 = True
+                        realized_gain += (w3 * t3_pct)
+                        rem_weight -= w3
+
+                    # 5. 익절 방어선 및 트레일링 스탑 체크
+                    if peak_ret >= trailing_trigger_ret:
+                        drop_from_peak = ((c_c - peak_p) / peak_p) * 100.0
+                        if drop_from_peak <= -trailing_threshold or (hit_t1 and c_c_ret <= 0.5):
+                            is_closed = True
+                            exit_date = c_dt
+                            final_bar_ret = ((c_c - entry_p) / entry_p) * 100.0
+                            exit_ret = realized_gain + rem_weight * final_bar_ret
+                            status_txt = f"🛡️ 익절 청산 완료 ({c_dt})"
+                            break
 
                 rec_dt = pd.to_datetime(hit_date_str).tz_localize(None)
                 curr_dt = pd.to_datetime(df_proc['Date'].iloc[-1]).tz_localize(None)
                 days_passed = len(pd.date_range(start=rec_dt, end=curr_dt, freq='B')) - 1
 
-                # 상태 표기
-                if final_ret_pct <= -7.0:
-                    status_txt = f"🚨 손절 기준 도달 ({final_ret_pct:+.1f}%)"
-                elif max_ret_pct >= 10.0 and final_ret_pct <= 0.5:
-                    status_txt = f"🛡️ 익절 방어선 청산 ({max_date_str})"
-                elif days_passed <= 5:
-                    status_txt = "🛒 신규 매수 (1차 50% 진입)"
+                if not is_closed:
+                    curr_p = float(df_proc['Close'].iloc[-1])
+                    c_ret = ((curr_p - entry_p) / entry_p) * 100.0
+                    blended_ret = round(realized_gain + rem_weight * c_ret, 1)
+
+                    if hit_t3:
+                        status_txt = f"🎉 3차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)" if is_kr_stock else f"🚀 3차 매도 후 텐베거 롱런 (+{blended_ret:+.1f}%)"
+                    elif hit_t2:
+                        status_txt = f"💰 2차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
+                    elif hit_t1:
+                        status_txt = f"✨ 1차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
+                    elif days_passed <= 5:
+                        status_txt = "🛒 신규 매수 (1차 50% 진입)"
+                    elif c_ret >= 0:
+                        status_txt = f"🟢 1차 매도 대기 (수익중 +{c_ret:.1f}%)"
+                    else:
+                        status_txt = f"🌊 눌림 진행중 ({c_ret:.1f}%)"
+
+                    final_ret_pct = blended_ret
+                    display_price = curr_p
                 else:
-                    status_txt = "🟢 수익 진행중" if final_ret_pct >= 0 else "🌊 눌림 진행중"
+                    final_ret_pct = round(exit_ret, 1)
+                    display_price = float(df_proc['Close'].iloc[-1])
+
+                max_so_far = peak_p
+                max_ret_pct = round(peak_ret, 1)
+                max_date_str = peak_date
             else:
                 max_so_far = entry_p
                 final_ret_pct = 0.0
                 max_ret_pct = 0.0
                 max_date_str = hit_date_str
+                display_price = entry_p
                 status_txt = "🛒 신규 매수 (1차 50% 진입)"
 
             is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
@@ -6062,29 +6144,35 @@ with main_tab2:
     
     st.markdown("""<div style="background-color: #0f172a; border: 1px solid #3b82f6; padding: 16px 20px; border-radius: 10px; margin: 10px 0 20px 0; color: #f8fafc;">
 <div style="font-size: 15px; font-weight: bold; color: #60a5fa; margin-bottom: 10px;">
-🛡️ 6M~1Y 관점 물타기(추가매수) vs 구조적 손절(Cut) 매매 원칙
+🛡️ [투자 전문가 가이드] 국내 vs 미국 퀀트 단계별 분할 매도 & 트레일링 스탑 원칙
 </div>
 <div style="font-size: 13px; line-height: 1.7; color: #cbd5e1;">
-<p style="margin-bottom: 10px;">
-<b>📌 1. <span style="color:#f43f5e; font-weight:bold;">❌ 무조건 손절(Cut)</span>해야 하는 3가지 핵심 상황</b><br>
-① <b>실적/산업 파괴:</b> 매출 및 영업이익 역성장 전환 또는 구조적 재무 악화<br>
-② <b>대세 추세선 붕괴:</b> 일봉 200일선 또는 주봉 20주선/50주선을 대량 거래량과 함께 하향 종가 이탈시<br>
-③ <b>대세 약세장(Bear Market):</b> KOSPI / S&P 500 대표 지수가 200일선 아래로 추락하는 장세 진입시
-</p>
-<p style="margin-bottom: 10px;">
-<b>📌 2. <span style="color:#10b981;">🌊 전략적 물타기(추가매수)</span>가 가능한 3가지 상황</b><br>
-① <b>계획된 50:50 분할진입:</b> 1차 50% 진입 후 <b>-15%~-20% 대파동 눌림목</b>에서 2차 50% 분할 투입 시나리오<br>
-② <b>실적 이상 무 + 지수 악재:</b> 기업 실적 사상 최대 지속 중 거래량 없이 지수 공포로 일시 밀렸을 때<br>
-③ <b>대세 지지선 사수:</b> 주봉 20주선 또는 주요 매물대(POC) 박스 하단을 몸통으로 강하게 지지할 때
-</p>
-<p style="margin: 0;">
-<b>📌 3. 수익 구간별 익절 방어선 상세 기준 (Trailing Stop)</b><br>
-• <b>[최고 수익률 +2.0% ~ +9.9%]</b> ➔ <b>+0.5% 익절 방어선 확정</b><br> 
-• <b>[수익률 +10% ~ +20%]</b> ➔ <b>+5.0% 익절 방어선 확정</b><br> 
-• <b>[수익률 +20% ~ +50%]</b> ➔ <b>최고점 대비 -12.0% 동적 방어선</b><br> 
-• <b>[수익률 +50% ~ +100%]</b> ➔ <b>최고점 대비 -15.0% 동적 방어선</b><br>
-• <b>[수익률 +100% 이상 (대파동)]</b> ➔ <b>최고점 대비 -20.0% 여유 방어선</b>
-</p>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 12px;">
+    <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid #3b82f6; padding: 12px; border-radius: 8px;">
+        <b style="color: #38bdf8; font-size: 14px;">🇰🇷 국내 주식 3단계 분할 익절 (순환매형)</b><br>
+        • <b>1차 매도:</b> <b>+12%</b> 도달 시 <b>물량 40% 익절</b> (원금 회수 및 본절 방어선 확정)<br>
+        • <b>2차 매도:</b> <b>+25%</b> 도달 시 <b>물량 30% 익절</b> (누적 70% 수익 확정)<br>
+        • <b>3차 매도:</b> <b>+50%</b> 도달 시 <b>물량 20% 익절</b> (누적 90% 확정, 잔여 10% 텐베거 추적)<br>
+        • <b>트레일링 청산:</b> 최고점 대비 <b>-12% 이상 반락</b> 시 잔여 물량 전량 청산 완료
+    </div>
+    <div style="background: rgba(244, 63, 94, 0.08); border: 1px solid #f43f5e; padding: 12px; border-radius: 8px;">
+        <b style="color: #fb7185; font-size: 14px;">🇺🇸 미국 주식 3단계 분할 익절 (추세추종형)</b><br>
+        • <b>1차 매도:</b> <b>+20%</b> 도달 시 <b>물량 30% 익절</b> (심리적 안정 확보)<br>
+        • <b>2차 매도:</b> <b>+50%</b> 도달 시 <b>물량 30% 익절</b> (누적 60% 수익 확정)<br>
+        • <b>3차 매도:</b> <b>+100%</b> 도달 시 <b>물량 20% 익절</b> (누적 80% 확정, 잔여 20% 대파동 롱런)<br>
+        • <b>트레일링 청산:</b> 최고점 대비 <b>-18% 이상 반락</b> 시 잔여 물량 전량 청산 완료
+    </div>
+</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+    <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid #ef4444; padding: 10px 12px; border-radius: 8px;">
+        <b style="color: #f87171;">📌 ❌ 무조건 손절(Cut) 원칙 (-7.0%)</b><br>
+        진입 후 1차 익절 전 종가 기준 <b>-7.0% 이하 도달 시</b> 기계적으로 손절하여 계좌 파산 방지
+    </div>
+    <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid #10b981; padding: 10px 12px; border-radius: 8px;">
+        <b style="color: #34d399;">📌 🌊 50:50 전략적 분할 매수 원칙</b><br>
+        추천일 <b>1차 50% 진입</b> 후, <b>-15%~-20% 대파동 지지선</b> 도달 시 <b>2차 50% 분할 투입</b>
+    </div>
+</div>
 </div>
 </div>""", unsafe_allow_html=True)
 
@@ -6285,23 +6373,29 @@ with main_tab2:
 
         st.markdown("##### 🏆 과거 3년 포착 종목 순위표 (수익률 내림차순)")
 
-        # 🌟 [사용자 요청 3] 필터 라디오 명칭 100% 매칭: 1차 매수 / 2차 매수 / 익절 방어선 / 전량 매도
+        # 🌟 [사용자 요청] 상태별 필터: 신규 매수 / 1차 매도 후 보유 / 2차 매도 후 보유 / 3차 매도 후 보유 / 익절 청산 / 손절 청산
         radio_opts = [
             "전체 보기",
-            "🛒 1차 매수 추천주",
-            "💧 2차 매수 추천주 (눌림목)",
-            "🛡️ 익절 방어선 추천주",
-            "🚨 전량 매도 추천주 (손절)"
+            "🛒 신규 매수 (1차 매수)",
+            "✨ 1차 매도 후 보유",
+            "💰 2차 매도 후 보유",
+            "🎉 3차 매도 후 보유",
+            "🛡️ 익절 청산 완료",
+            "🚨 손절 청산 완료"
         ]
         filter_option = st.radio("🎯 상태별 종목 골라보기:", radio_opts, horizontal=True, key="rad_status_filter")
-        if filter_option == "🛒 1차 매수 추천주":
-            table_df = table_df[table_df['상태'].str.contains("신규 매수|상대강도|1차 매수|1차 50%|1차 진입", na=False) & ~table_df['상태'].str.contains("익절", na=False)]
-        elif filter_option == "💧 2차 매수 추천주 (눌림목)":
-            table_df = table_df[table_df['상태'].str.contains("눌림목|물타기|2차 50%|2차 체결|2차 타점", na=False) & ~table_df['상태'].str.contains("익절", na=False)]
-        elif filter_option == "🛡️ 익절 방어선 추천주":
-            table_df = table_df[table_df['상태'].str.contains("익절|방어선|청산", na=False)]
-        elif filter_option == "🚨 전량 매도 추천주 (손절)":
-            table_df = table_df[table_df['상태'].str.contains("손절|매도|붕괴", na=False)]
+        if filter_option == "🛒 신규 매수 (1차 매수)":
+            table_df = table_df[table_df['상태'].str.contains("신규 매수|1차 매도 대기|눌림 진행중", na=False)]
+        elif filter_option == "✨ 1차 매도 후 보유":
+            table_df = table_df[table_df['상태'].str.contains("1차 매도 후", na=False)]
+        elif filter_option == "💰 2차 매도 후 보유":
+            table_df = table_df[table_df['상태'].str.contains("2차 매도 후", na=False)]
+        elif filter_option == "🎉 3차 매도 후 보유":
+            table_df = table_df[table_df['상태'].str.contains("3차 매도 후|텐베거", na=False)]
+        elif filter_option == "🛡️ 익절 청산 완료":
+            table_df = table_df[table_df['상태'].str.contains("익절 청산", na=False)]
+        elif filter_option == "🚨 손절 청산 완료":
+            table_df = table_df[table_df['상태'].str.contains("손절 청산", na=False)]
 
         # 🌟 [사용자 요청 4] 쉼표(,) 입력 시 다중 종목 동시 검색 (예: 심텍, 삼성)
         search_keyword = st.text_input("🔍 종목 검색 (쉼표(,) 구분 시 다중 종목 동시 검색 지원):", placeholder="예: 심텍, 삼성 또는 현대, 카카오", key="tab3_stock_search").strip()
