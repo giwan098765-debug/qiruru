@@ -2680,12 +2680,16 @@ def get_gemini_advice(api_key, ticker, ai_data, entry_price, roi, currency_symbo
         
         # 💡 [PRO QUANT 교정] 특수 이모지 파싱 문법 에러 원천 차단 포맷
         system_instruction = (
-            "당신은 월스트리트 프랍 데스크 출신의 냉철한 PRO QUANT 트레이딩 디렉터입니다.\n"
-            "손익비 2.0 : 1 (+5.0% 익절 / -2.5% 손절) 전략을 철저히 준수하여 대응 시나리오를 지시하십시오.\n\n"
-            "[핵심 매매 규칙 지침]\n"
-            "1. 손익비 2.0 : 1 구조: 1차 목표가(+5.0%) 도달 시 50% 물량 익절을 지시하십시오.\n"
-            "2. Break-Even 본절가 방어: 주가가 +3.0% 이상 상승 시, 손절가를 매수가 +0.3%(수수료 보존)로 상향하여 리스크를 0으로 확정짓는 전략을 조언하십시오.\n"
-            "3. -2.5% Hard Cap 손절: -2.5% 하락 시 즉시 원칙 손절을 선언하십시오."
+            "당신은 월스트리트 프랍 데스크 출신의 냉철한 PRO QUANT 트레이딩 디렉터이자 전문 수석 투자 트레이너입니다.\n"
+            "손익비 2.0 : 1 (+5.0% 익절 / -2.5% 손절) 전략과 퀀트 엔진의 진입 가이드를 철저히 준수하여 대응 시나리오를 지시하십시오.\n\n"
+            "[핵심 매매 규칙 및 진입 지침]\n"
+            "1. 포지션 미보유 시 신규 진입 지침 (퀀트 엔진과 100% 일치):\n"
+            "   - [정상 이격도(20일선 이격도 98%~105%)]: 🟢 '신규 분할 매수 즉시 승인' (현재가 부근 1차 진입).\n"
+            "   - [단기 과열 주도주(20일선 이격도 105%~115%)]: 🟡 'S급 주도주 승인 / 지정가 눌림목 대기'. 종목의 정배열 추세와 펀더멘털은 최상급으로 승인하되, 현재가 시장가 추격 매수(Market Buy)는 잔파동 손절 위험이 있으므로 금지하고, '5일선/10일선 지지선 부근 눌림목(지정가) 분할 매수 예약 체결' 전략을 명확히 지시하십시오.\n"
+            "   - [극단적 과열(이격도 115% 초과 or 200일선 130% 초과)]: 🔴 '신규 진입 절대 금지 / 관망'. 보유자 전용 익절 영역.\n"
+            "2. 손익비 2.0 : 1 구조: 1차 목표가(+5.0%) 도달 시 50% 물량 익절을 지시하십시오.\n"
+            "3. Break-Even 본절가 방어: 주가가 +3.0% 이상 상승 시, 손절가를 매수가 +0.3%(수수료 보존)로 상향하여 리스크를 0으로 확정짓는 전략을 조언하십시오.\n"
+            "4. -2.5% Hard Cap 손절: -2.5% 하락 시 즉시 원칙 손절을 선언하십시오."
         )
 
         fact_sheet = f"[종목코드: {ticker}]\n[포지션 정보]\n{position_info}\n[기술적 지표 및 실시간 데이터]\n{ai_data}"
@@ -4628,7 +4632,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 🎯 [PRO QUANT 개편 3.0] 종목 습성(Profile) + 실시간 모멘텀 동적 결합 엔진
 # ====================================================================
 
-# 👇 [여기부터 추가] ----------------------------------------------------
 def get_preferred_ma_layer(df_proc):
     """최근 60봉 기준, 5/10/20일 이평선 중 종목이 가장 잘 지지받는 이평선(5, 10, 20)을 추출하는 함수"""
     try:
@@ -4645,18 +4648,11 @@ def get_preferred_ma_layer(df_proc):
         return min(distances, key=distances.get)
     except Exception:
         return 5
+
 # ====================================================================
 # 🎨 [5대 마스터 캔들·차트 강세/약세 차단 검증 엔진] (국내 & 미국 100% 동일 적용)
 # ====================================================================
 def verify_5_candle_chart_patterns(df_proc, pos=-1):
-    """
-    💡 하나마이크론 등 거래량 줄며 몸통 작아지는 상승 소진 약세 100% 차단 + 5대 강세 패턴 검증
-    1. 거래량 감소 + 캔들 몸통 수축 소진 약세 차단 (Body Shrink Burnout Block) -> 매수 금지!
-    2. 장대 양봉 강세 감싸기 (Bullish Engulfing) -> 강력 매수 신호
-    3. 망치형/도지 하단 지지 턴어라운드 (Hammer/Pinbar) -> 하방 소화 반등
-    4. 거래량 1.5배 이상 분출 이평선 돌파 양봉 (RVOL Breakout) -> 거래량 확증
-    5. 3연속 적삼병 / 우상향 계단식 지지 (Three White Soldiers / Staircase) -> 대세 승승
-    """
     try:
         if df_proc is None or len(df_proc) < 20:
             return True, "정상"
@@ -4684,31 +4680,16 @@ def verify_5_candle_chart_patterns(df_proc, pos=-1):
 
         vol_ma20 = float(df_proc['Volume'].iloc[max(0, idx-20):idx].mean()) if 'Volume' in df_proc.columns else c_vol
 
-        # ----------------------------------------------------------------
-        # 🚨 [패턴 1 차단] 거래량 감소 + 캔들 몸통 축소 상승 소진 약세 (Burnout Weakness)
-        # 하나마이크론 차트처럼 주가 상단에서 거래량이 줄어들며 몸통이 1/3 이하로 줄어드는 팽이/약세 캔들 100% 매수 차단!
-        # ----------------------------------------------------------------
         if c_vol < p_vol * 0.70 and body_curr < body_prev * 0.40 and (c_high - max(c_close, c_open)) > body_curr:
             return False, "🚨 캔들 몸통 수축 & 거래량 줄어듦 약세 (상승 소진 팽이/약세 패턴)"
 
-        # 최근 2봉 연속 거래량 감소 + 캔들 몸통 급감하며 윗꼬리 형성 시 무조건 매수 차단
         if c_vol < vol_ma20 * 0.85 and body_curr < (body_prev * 0.45) and c_close <= c_open:
             return False, "🚨 거래량 및 캔들 몸통 축소 약세 음봉 패턴"
 
-        # ----------------------------------------------------------------
-        # 🟢 5대 강세 패턴 검증
-        # ----------------------------------------------------------------
-        # 패턴 2: 장대 양봉 강세 감싸기 (Bullish Engulfing)
         is_engulfing = (p_close < p_open) and (c_close > c_open) and (c_close >= p_open) and (c_open <= p_close) and (c_vol >= p_vol * 1.1)
-
-        # 패턴 3: 망치형 / 아래꼬리 하단 지지 턴어라운드 (Hammer / Pinbar)
         lower_shadow = min(c_close, c_open) - c_low
         is_hammer = (lower_shadow / candle_range >= 0.50) and (c_close >= c_open or (c_close - c_low) / candle_range >= 0.65)
-
-        # 패턴 4: 거래량 1.5배 이상 수급 확증 양봉 (RVOL Bullish Breakout)
         is_rvol_bull = (c_vol >= vol_ma20 * 1.4) and (c_close > c_open)
-
-        # 패턴 5: 적삼병 / 계단식 연속 우상향 (Three White Soldiers)
         p2_close = float(prev2['Close'])
         is_three_white = (c_close > p_close > p2_close) and (c_close > c_open) and (p_close > p_open)
 
@@ -4723,14 +4704,6 @@ def verify_5_candle_chart_patterns(df_proc, pos=-1):
 # 🛡️ [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 엔진]
 # ====================================================================
 def verify_ma_breakout_master_rules(df_proc, pos=-1):
-    """
-    🏆 [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙]
-    - 규칙 1: 돌파 여유율 (60일선 +1.5%, 120일선 +2.0%, 200일선 +2.5% 이상 종가 안착)
-    - 규칙 2: 이평선 기울기(Slope) 우상향/수평(>=0) 필수 (내리막 저항선 매수 금지)
-    - 규칙 3: RVOL 수급 확증 (60일선 1.5배, 120/200일선 2.0배 이상 + 양봉 종가)
-    - 규칙 4: 2봉 연쇄 안착 검증 (2-Bar Hold)
-    - 규칙 5: 저항 이평선 샌드위치 매물벽 차단 (상방 여유 공간 >= 5.0%)
-    """
     try:
         if df_proc is None or len(df_proc) < 30:
             return True, "정상"
@@ -4756,9 +4729,6 @@ def verify_ma_breakout_master_rules(df_proc, pos=-1):
         ma120_prev = float(prev.get('MA_120', ma120_curr))
         ma200_prev = float(prev.get('MA_200', ma200_curr))
 
-        # ------------------------------------------------------------
-        # 1. 60일선 돌파 및 근접 안착 검증
-        # ------------------------------------------------------------
         is_breaking_60 = (prev['Close'] < ma60_prev and c_close >= ma60_curr) or (abs(c_close - ma60_curr) / ma60_curr <= 0.02)
         if is_breaking_60:
             if c_close < (ma60_curr * 1.015):
@@ -4768,9 +4738,6 @@ def verify_ma_breakout_master_rules(df_proc, pos=-1):
             if prev['Close'] < ma60_prev and (rvol < 1.5 or c_close <= c_open):
                 return False, "60일선 돌파 RVOL 1.5배 미달 또는 음봉"
 
-        # ------------------------------------------------------------
-        # 2. 120일선 돌파 및 근접 안착 검증
-        # ------------------------------------------------------------
         is_breaking_120 = (prev['Close'] < ma120_prev and c_close >= ma120_curr) or (abs(c_close - ma120_curr) / ma120_curr <= 0.02)
         if is_breaking_120:
             if c_close < (ma120_curr * 1.020):
@@ -4780,9 +4747,6 @@ def verify_ma_breakout_master_rules(df_proc, pos=-1):
             if prev['Close'] < ma120_prev and (rvol < 2.0 or c_close <= c_open):
                 return False, "120일선 돌파 RVOL 2.0배 미달 또는 음봉"
 
-        # ------------------------------------------------------------
-        # 3. 200일선 돌파 및 근접 안착 검증
-        # ------------------------------------------------------------
         is_breaking_200 = (prev['Close'] < ma200_prev and c_close >= ma200_curr) or (abs(c_close - ma200_curr) / ma200_curr <= 0.02)
         if is_breaking_200:
             if c_close < (ma200_curr * 1.025):
@@ -4792,31 +4756,20 @@ def verify_ma_breakout_master_rules(df_proc, pos=-1):
             if prev['Close'] < ma200_prev and (rvol < 2.0 or c_close <= c_open):
                 return False, "200일선 돌파 RVOL 2.0배 미달 또는 음봉"
 
-        # ------------------------------------------------------------
-        # 4. 규칙 4: 2봉 연쇄 안착 검증 (2-Bar Hold)
-        # ------------------------------------------------------------
         if idx >= 2:
             prev2 = df_proc.iloc[idx - 2]
             p2_close = float(prev2['Close'])
             p1_close = float(prev['Close'])
             ma60_p2 = float(prev2.get('MA_60', ma60_prev))
-            
-            # 전일 돌파 성공했으나 당일 60일선 아래로 무너진 이탈봉 차단
             if p1_close >= ma60_prev and p2_close < ma60_p2 and c_close < ma60_curr:
                 return False, "60일선 2봉 연쇄 안착 실패 (트랩 차단)"
 
-        # ------------------------------------------------------------
-        # 5. 규칙 5: 저항 이평선 샌드위치 매물벽 차단 (Ceiling Wall Distance)
-        # ------------------------------------------------------------
         upper_mas = [m for m in [ma60_curr, ma120_curr, ma200_curr] if m > c_close]
         if upper_mas:
             nearest_upper = min(upper_mas)
             if ((nearest_upper - c_close) / c_close) * 100.0 < 5.0:
                 return False, "상방 차상위 저항선 공간 5.0% 미만 샌드위치 차단"
 
-        # ------------------------------------------------------------
-        # 6. 🎨 5대 캔들/차트 강세 패턴 검증 & 거래량 감소 몸통 수축 소진 약세 무조건 차단
-        # ------------------------------------------------------------
         is_valid_candle, candle_msg = verify_5_candle_chart_patterns(df_proc, pos=pos)
         if not is_valid_candle:
             return False, candle_msg
@@ -5352,7 +5305,6 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
         df_proc, _ = process_data(df_hist, "daily", ticker, skip_news=True)
         if df_proc is None: return []
 
-        # 💡 [속도 100배 향상 & 결과 0건 원천 방지] OBV, 52주 신고가, Class A 지표 선제 벡터 연산 (루프 연산 O(1) 단축)
         df_proc['OBV'] = (np.sign(df_proc['Close'].diff()) * df_proc['Volume']).fillna(0).cumsum()
         df_proc['OBV_MA'] = df_proc['OBV'].rolling(10, min_periods=1).mean()
         df_proc['High_52W'] = df_proc['High'].rolling(250, min_periods=1).max()
@@ -5375,39 +5327,31 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
         hits = []
         total_len = len(df_proc)
-
-        # 💡 [국내 & 미국 주식: 실행 시점 기준 3년 치 전수 탐색]
         three_years_ago_str = (datetime.now() - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
         three_years_ago_dt = pd.to_datetime(three_years_ago_str)
         date_col = pd.to_datetime(df_proc['Date']).dt.tz_localize(None)
         target_indices = df_proc[date_col >= three_years_ago_dt].index
         start_search_idx = target_indices[0] if len(target_indices) > 0 else max(60, total_len - 750)
         
-        last_hit_bar = -99
-
-        # 💡 [장 마감 후 금일 신규 시그널 포착 가드레일]
-        now = datetime.now()
-        now_time = now.time()
-        today_date = now.date()
-        today_str = today_date.strftime('%Y-%m-%d')
+        last_hit_bar = -999
+        last_exit_bar = -999
+        last_is_closed = True
 
         ticker_str = str(ticker).strip().upper()
         is_kr = ticker_str.endswith('.KS') or ticker_str.endswith('.KQ') or (ticker_str.split('.')[0].isdigit() and len(ticker_str.split('.')[0]) == 6)
         is_us = not is_kr and not (ticker_str.endswith('-KRW') or ticker_str.startswith('KRW-'))
+        is_us_stock = not is_kr
 
-        is_kr_market_closed = (now.weekday() >= 5) or (now_time >= dtime(15, 30))
-        is_us_market_closed = (now.weekday() >= 5) or (dtime(6, 0) <= now_time < dtime(22, 30))
-        is_this_market_closed = is_kr_market_closed if is_kr else (is_us_market_closed if is_us else True)
-
-        last_candle_date = pd.to_datetime(df_proc['Date'].iloc[-1]).date()
-        is_today_candle_received = (last_candle_date == today_date)
-
-        # ⚡ [실시간 캔들 추천 모드] 미확정 장중 봉을 포함하여 당일 실시간 캔들 시세로 시그널 즉시 평가
-        eval_df = df_proc
-        total_eval_len = len(eval_df)
+        total_eval_len = len(df_proc)
 
         for pos in range(start_search_idx, total_eval_len, 1):
-            if pos - last_hit_bar < 3: continue
+            # 🎯 [신규 쿨다운 가드레일] 기본 3일 중복 추천 방지 + 익절/손절 전량 매도 완료된 종목은 즉시 재추천 허용
+            if not last_is_closed:
+                if pos - last_hit_bar < 3:
+                    continue
+            else:
+                if pos <= last_exit_bar:
+                    continue
             
             latest = df_proc.iloc[pos]
             prev = df_proc.iloc[pos - 1] if pos > 0 else latest
@@ -5425,7 +5369,6 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             disp_20 = (c_close / ma20) * 100.0 if ma20 > 0 else 100.0
             rsi_val = float(latest.get('RSI', 50))
 
-            # 🌟 [상대강도 TOP 5% Class A 전용 정석 계단식 파동 재진입 시스템] O(1) 인덱스 참조
             is_class_a = bool(df_proc['Is_Class_A_Pre'].iloc[pos])
 
             # Trigger 1: 대바닥 턴어라운드 (장기 수렴 + MACD/OBV 바닥 골든크로스)
@@ -5438,37 +5381,26 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             vol_prev = float(prev.get('Volume', vol_curr)) if pos > 0 else vol_curr
             vol_ma20 = float(df_proc['Volume'].iloc[max(0, pos-20):pos].mean()) if 'Volume' in df_proc.columns else vol_curr
             
-            # ① 거래량 감소 눌림: 전일 대비 50% 이하로 바짝 줄어듦 (개미 털기 구간)
             vol_dry_up = (vol_curr <= vol_prev * 0.55) or (vol_curr <= vol_ma20 * 0.60)
-            
-            # ② OBV 세력 매집선 사수: OBV 지표 10일 이평선 사수
             obv_curr = float(df_proc['OBV'].iloc[pos]) if 'OBV' in df_proc.columns else 0
             obv_ma10 = float(df_proc['OBV_MA'].iloc[pos]) if 'OBV_MA' in df_proc.columns else 0
             is_obv_supported = (obv_curr >= obv_ma10)
-            
-            # ③ 20일선/60일선 지지선 도달 & 사수
             c_low_val = float(latest['Low'])
             is_support_touch = (c_low_val <= ma20 * 1.015) or (c_low_val <= ma60 * 1.015)
             
             is_class_a_staircase_reentry = is_class_a and vol_dry_up and is_obv_supported and is_support_touch and (c_close >= ma60)
-
-            # Trigger 3: 대형 정예 우량주 추세 수렴
             is_secular_megacap_trend = (c_close >= ma20 or c_close >= ma60) and (ma20 >= ma60) and (disp_20 >= 94.0) and (35.0 <= rsi_val <= 68.0) and is_macd_turnaround
 
-            if not (is_bottom_reversal or is_class_a_staircase_reentry or is_secular_megacap_trend): continue
+            if not (is_bottom_reversal or is_class_a_staircase_reentry or is_secular_megacap_trend):
+                continue
 
-            # 🛡️ [가짜 돌파 & 수직 꺾임 폭락 차단 방어 필터]
             c_high = float(latest['High'])
-            c_low  = float(latest['Low'])
             c_open = float(latest['Open'])
-            candle_range = c_high - c_low
+            candle_range = c_high - c_low_val
             upper_shadow = c_high - max(c_close, c_open)
             is_shadow_trap = (upper_shadow / candle_range > 0.40) if candle_range > 0 else False
-
-            # 수직 꺾임 과열(이격도 110% 초과 + 거래량 터진 음봉) 차단
             is_vertical_drop = (disp_20 > 110.0) and (c_close < c_open) and (vol_curr > vol_ma20 * 1.3)
 
-            # 🧱 [상방 이평선 저항벽 5% 미만 무조건 차단 가드레일] 캔들 위 5% 이내에 60, 120, 200일선 저항이 막고 있으면 100% 무조건 차단!
             ma60_val  = float(latest.get('MA_60', c_close))
             ma120_val = float(latest.get('MA_120', c_close))
             ma200_val = float(latest.get('MA_200', c_close))
@@ -5479,44 +5411,32 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 if ((nearest_upper - c_close) / c_close) * 100.0 < 5.0:
                     is_upper_ma_blocked = True
 
-            # 🛡️ [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 검증]
             is_valid_breakout, _ = verify_ma_breakout_master_rules(df_proc, pos=pos)
-
-            # 🎨 [5대 캔들/차트 패턴 검증] 거래량 감소 + 캔들 몸통 수축 소진 약세 100% 매수 차단!
             is_valid_candle_pattern, _ = verify_5_candle_chart_patterns(df_proc, pos=pos)
 
             if is_shadow_trap or is_vertical_drop or not is_obv_supported or is_upper_ma_blocked or not is_valid_breakout or not is_valid_candle_pattern:
                 continue
 
-            last_hit_bar = pos
             raw_hit_date = df_proc['Date'].iloc[pos]
             hit_dt = pd.to_datetime(raw_hit_date)
             
-            # 🇺🇸 미국 주식의 경우 미국 현지 날짜(예: 8월 11일)에 +1일을 더해 대한민국 시각(KST) 마감 환산 날짜(예: 8월 12일)로 표출
-            is_us_stock = not (ticker_str.endswith('.KS') or ticker_str.endswith('.KQ') or (ticker_str.split('.')[0].isdigit() and len(ticker_str.split('.')[0]) == 6) or ticker_str.endswith('-KRW') or ticker_str.startswith('KRW-'))
             if is_us_stock:
                 hit_dt = hit_dt + pd.Timedelta(days=1)
-                
-                # 🇺🇸 [미국주 전용 정밀 가드레일 & 정배열 초입 필터] (국내주 100% 무변경)
-                # 1. 200일선 우상향 사수 & 200일선 대비 +20% 초과 노후화 정배열/상투 차단
                 disp_200 = (c_close / ma200_val) * 100.0 if ma200_val > 0 else 100.0
                 if c_close < ma200_val or disp_200 > 120.0:
                     continue
 
-                # 2. 이평선 밴드폭(5일선~200일선 간격) 12% 초과 노후화 정배열 차단 (초입만 허용)
                 ma5_val = float(latest.get('MA_5', c_close))
                 ma_band_width = ((ma5_val - ma200_val) / ma200_val) * 100.0 if ma200_val > 0 else 0.0
                 if ma_band_width > 12.0:
                     continue
 
-                # 3. 20일선 기울기 우상향 및 5/20일선 이탈 음봉 차단
                 ma20_val = float(latest.get('MA_20', c_close))
                 ma20_prev_val = float(prev.get('MA_20', ma20_val))
                 ma5_prev_val = float(prev.get('MA_5', ma5_val))
                 if ma20_val <= ma20_prev_val or (c_close < ma5_val and c_close < ma20_val) or (ma5_val <= ma5_prev_val and c_close < ma5_val):
                     continue
 
-                # 4. 🚨 [MACD 데드크로스 & 히스토그램 모멘텀 감퇴 음봉 100% 차단 (ED, KO 4/23 상투 꺾임 원천 봉쇄)]
                 macd_val = float(latest.get('MACD', 0))
                 signal_val = float(latest.get('Signal', 0))
                 macd_hist_val = float(latest.get('MACD_Hist', 0))
@@ -5524,21 +5444,17 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 c_prev_close = float(prev.get('Close', c_close))
                 c_open_val = float(latest.get('Open', c_close))
                 
-                # ① MACD 데드크로스 또는 오실레이터 음전 시 차단
                 if macd_val < signal_val or macd_hist_val <= 0:
                     continue
 
-                # ② 음봉이거나 전일비 하락이면서 MACD 오실레이터가 전일 대비 줄어드는 모멘텀 감퇴 상투 꺾임 100% 차단!
                 if (macd_hist_val <= macd_hist_prev_val) and (c_close < c_open_val or c_close < c_prev_close):
                     continue
 
-                # 5. 🚨 [DMI 하락 추세 (-DI > +DI) 100% 차단]
                 plus_di_val = float(latest.get('Plus_DI', 50))
                 minus_di_val = float(latest.get('Minus_DI', 0))
                 if minus_di_val > plus_di_val:
                     continue
 
-                # 6. RSI 70 초과 탐욕/과열 및 약세주 수급 차단 (힘 약한 미국주 자동 제외)
                 if rsi_val > 70.0 or rsi_val < 42.0 or obv_curr < obv_ma10:
                     continue
 
@@ -5546,23 +5462,13 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             calc_entry, _ = calculate_smart_entry_price(df_proc.iloc[:pos+1], ai_data={})
             if calc_entry <= 0: calc_entry = round(c_close, 2)
 
-            # ====================================================================
-            # 🎯 [실제 체결가 및 분할 익절/트레일링 스탑 정밀 시뮬레이션 엔진]
-            # ====================================================================
             after_df = df_proc.iloc[pos + 1:]
             if not after_df.empty:
                 next_open = float(after_df.iloc[0]['Open'])
                 next_low  = float(after_df.iloc[0]['Low'])
-                # 💡 [조건주문/지정가 체결 원리 100% 실전 반영]
-                # 1) 시초가가 지정가 이하로 갭하락 출발 시: 더 유리한 시초가(next_open)에 즉시 전량 체결!
-                # 2) 시초가는 위였으나 장중 저가가 지정가 이하 도달: 지정가(calc_entry)에 눌림목 체결
-                # 3) 장중 저가도 지정가보다 높아 미체결된 경우: 시초가(next_open) 시장가 매수한 것으로 간주
-                if next_open <= calc_entry:
-                    entry_p = round(next_open, 2)
-                elif next_low <= calc_entry:
-                    entry_p = round(calc_entry, 2)
-                else:
-                    entry_p = round(next_open, 2)
+                if next_open <= calc_entry: entry_p = round(next_open, 2)
+                elif next_low <= calc_entry: entry_p = round(calc_entry, 2)
+                else: entry_p = round(next_open, 2)
             else:
                 entry_p = calc_entry
 
@@ -5570,26 +5476,23 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             is_kr_stock = not is_us_stock
 
             if not after_df.empty:
-                # 🎯 국내 vs 미국 시장별 분할 익절 및 트레일링 스탑 파라미터 분리
-                t1_pct = 12.0 if is_kr_stock else 20.0
-                t2_pct = 25.0 if is_kr_stock else 50.0
-                t3_pct = 50.0 if is_kr_stock else 100.0
-
-                w1, w2, w3 = (0.40, 0.30, 0.20) if is_kr_stock else (0.30, 0.30, 0.20)
-                
-                hit_t1, hit_t2, hit_t3 = False, False, False
-                hit_ma20, hit_ma60, hit_ma120, hit_ma200 = False, False, False, False
-                realized_gain = 0.0
-                rem_weight = 1.0
-
                 peak_p = entry_p
                 peak_ret = 0.0
                 peak_date = hit_date_str
                 is_closed = False
                 exit_date = '-'
                 exit_ret = 0.0
+                exit_bar_idx = total_eval_len
 
-                for idx_bar, row_bar in after_df.iterrows():
+                # 🎯 [2단계 분할 매도 & 전량 청산 변수 (20일선 50% / 60일선 잔여 50% 전량)]
+                hit_ma20_exit = False  # 1차 20일선 이탈 매도 (50% 실현)
+                hit_ma60_exit = False  # 2차 60일선 이탈 전량 매도 (잔여 50% 청산)
+                r1_gain = 0.0          # 1차 매도 시점의 확정 수익률
+                r2_gain = 0.0          # 2차 매도 시점의 확정 수익률
+                rem_weight = 1.0       # 잔여 보유 비중 (초기 100%)
+
+                for i_offset, (idx_bar, row_bar) in enumerate(after_df.iterrows()):
+                    c_bar_pos = pos + 1 + i_offset
                     c_h = float(row_bar['High'])
                     c_l = float(row_bar['Low'])
                     c_c = float(row_bar['Close'])
@@ -5600,89 +5503,75 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
                     ma20 = float(row_bar['MA_20']) if 'MA_20' in row_bar and not pd.isna(row_bar['MA_20']) else c_c
                     ma60 = float(row_bar['MA_60']) if 'MA_60' in row_bar and not pd.isna(row_bar['MA_60']) else c_c
-                    ma120 = float(row_bar['MA_120']) if 'MA_120' in row_bar and not pd.isna(row_bar['MA_120']) else c_c
-                    ma200 = float(row_bar['MA_200']) if 'MA_200' in row_bar and not pd.isna(row_bar['MA_200']) else c_c
+                    
+                    prev_row = df_proc.iloc[c_bar_pos - 1] if c_bar_pos > 0 else row_bar
+                    p_c = float(prev_row['Close'])
+                    p_ma20 = float(prev_row.get('MA_20', p_c))
+                    p_ma60 = float(prev_row.get('MA_60', p_c))
+                    macd_hist = float(row_bar.get('MACD_Hist', 0))
 
-                    # 최고점 갱신
                     if c_h > peak_p:
                         peak_p = c_h
                         peak_ret = ((peak_p - entry_p) / entry_p) * 100.0
                         peak_date = c_dt
 
-                    c_h_ret = ((c_h - entry_p) / entry_p) * 100.0
                     c_c_ret = ((c_c - entry_p) / entry_p) * 100.0
                     c_l_ret = ((c_l - entry_p) / entry_p) * 100.0
 
-                    # 1. 구조적 손절 체크 (-7.0% 이하 도달 시)
-                    if not hit_t1 and peak_ret < 2.0 and c_l_ret <= -7.0:
+                    # 1. 🚨 원칙 손절 체크 (-7.0% 이하)
+                    if not hit_ma20_exit and peak_ret < 2.0 and c_l_ret <= -7.0:
                         is_closed = True
                         exit_date = c_dt
                         exit_ret = -7.0
+                        exit_bar_idx = c_bar_pos
                         status_txt = f"🚨 손절 청산 완료 ({c_dt})"
                         break
 
-                    # 2. 목표가 도달 체크 (1차/2차/3차)
-                    if not hit_t1 and c_h_ret >= t1_pct:
-                        hit_t1 = True
-                        realized_gain += (w1 * t1_pct)
-                        rem_weight -= w1
-
-                    if hit_t1 and not hit_t2 and c_h_ret >= t2_pct:
-                        hit_t2 = True
-                        realized_gain += (w2 * t2_pct)
-                        rem_weight -= w2
-
-                    if hit_t2 and not hit_t3 and c_h_ret >= t3_pct:
-                        hit_t3 = True
-                        realized_gain += (w3 * t3_pct)
-                        rem_weight -= w3
-
-                    # 3. 🎯 이평선(20, 60, 120, 200일선) 지지 이탈 시 단계별 분할 매도
-                    if peak_ret >= 10.0 and c_dt != peak_date and rem_weight > 0.05:
-                        if not hit_ma20 and c_c < ma20:
-                            hit_ma20 = True
-                            w_sell = min(0.30, rem_weight)
-                            realized_gain += (w_sell * c_c_ret)
-                            rem_weight -= w_sell
-
-                        if hit_ma20 and not hit_ma60 and c_c < ma60 and rem_weight > 0.05:
-                            hit_ma60 = True
-                            w_sell = min(0.30, rem_weight)
-                            realized_gain += (w_sell * c_c_ret)
-                            rem_weight -= w_sell
-
-                        if hit_ma60 and not hit_ma120 and c_c < ma120 and rem_weight > 0.05:
-                            hit_ma120 = True
-                            w_sell = min(0.20, rem_weight)
-                            realized_gain += (w_sell * c_c_ret)
-                            rem_weight -= w_sell
-
-                        if hit_ma120 and not hit_ma200 and c_c < ma200:
-                            hit_ma200 = True
-                            is_closed = True
-                            exit_date = c_dt
-                            exit_ret = realized_gain + rem_weight * c_c_ret
-                            status_txt = f"🛡️ 200일선 이탈 전량 청산 완료 ({c_dt})"
-                            break
-
-                    # 4. 🎯 사용자 지정 50% 락인 규칙적 익절선 (Trailing Stop) 체크
+                    # 2. 🎯 사용자 맞춤형 50% 락인 규칙적 익절선 (Trailing Stop)
                     stop_line = get_trailing_stop_line(peak_ret)
                     if stop_line is not None:
-                        is_exit_trigger = False
+                        is_trail_exit = False
                         if c_dt == peak_date:
                             if c_c_ret <= stop_line:
-                                is_exit_trigger = True
+                                is_trail_exit = True
                         else:
                             if c_c_ret <= stop_line or c_l_ret <= stop_line:
-                                is_exit_trigger = True
+                                is_trail_exit = True
 
-                        if is_exit_trigger:
+                        if is_trail_exit:
                             is_closed = True
                             exit_date = c_dt
                             final_bar_ret = max(stop_line, c_c_ret)
-                            exit_ret = realized_gain + rem_weight * final_bar_ret
+                            if hit_ma20_exit:
+                                exit_ret = (r1_gain * 0.50) + (final_bar_ret * 0.50)
+                            else:
+                                exit_ret = final_bar_ret
+                            exit_bar_idx = c_bar_pos
                             status_txt = f"🛡️ 익절 청산 완료 ({c_dt})"
                             break
+
+                    # 3. 🎯 [2단계 분할 매도 & 전량 청산] 지표 확증 기반 (1봉 휩쏘 방지)
+                    if peak_ret >= 5.0 and c_dt != peak_date:
+                        # ① [1차 매도]: 20일선 지지 이탈 확증 시 50% 실현 매도
+                        if not hit_ma20_exit:
+                            is_ma20_broken = (c_c <= ma20 * 0.985) or (c_c < ma20 and macd_hist < 0) or (c_c < ma20 and p_c < p_ma20)
+                            if is_ma20_broken:
+                                hit_ma20_exit = True
+                                r1_gain = c_c_ret
+                                rem_weight = 0.50
+
+                        # ② [2차 매도]: 1차 매도 후 60일선 지지 이탈 확증 시 잔여 50% 전량 매도 완료 (100% 청산)
+                        elif hit_ma20_exit and not hit_ma60_exit:
+                            is_ma60_broken = (c_c <= ma60 * 0.985) or (c_c < ma60 and macd_hist < 0) or (c_c < ma60 and p_c < p_ma60)
+                            if is_ma60_broken:
+                                hit_ma60_exit = True
+                                r2_gain = c_c_ret
+                                is_closed = True
+                                exit_date = c_dt
+                                exit_ret = (r1_gain * 0.50) + (r2_gain * 0.50)
+                                exit_bar_idx = c_bar_pos
+                                status_txt = f"🛡️ 60일선 이탈 확인 전량 매도 완료 ({c_dt})"
+                                break
 
                 rec_dt = pd.to_datetime(hit_date_str).tz_localize(None)
                 curr_dt = pd.to_datetime(df_proc['Date'].iloc[-1]).tz_localize(None)
@@ -5691,26 +5580,18 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 if not is_closed:
                     curr_p = float(df_proc['Close'].iloc[-1])
                     c_ret = ((curr_p - entry_p) / entry_p) * 100.0
-                    blended_ret = round(realized_gain + rem_weight * c_ret, 1)
-
-                    if hit_ma120:
-                        status_txt = f"📉 120일선 이탈 3차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
-                    elif hit_ma60:
-                        status_txt = f"📉 60일선 이탈 2차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
-                    elif hit_ma20:
-                        status_txt = f"📉 20일선 이탈 1차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
-                    elif hit_t3:
-                        status_txt = f"🎉 3차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)" if is_kr_stock else f"🚀 3차 매도 후 텐베거 롱런 (+{blended_ret:+.1f}%)"
-                    elif hit_t2:
-                        status_txt = f"💰 2차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
-                    elif hit_t1:
-                        status_txt = f"✨ 1차 매도 후 잔여 보유 (+{blended_ret:+.1f}%)"
-                    elif days_passed <= 5:
-                        status_txt = "🛒 신규 매수 (1차 50% 진입)"
-                    elif c_ret >= 0:
-                        status_txt = f"🟢 1차 매도 대기 (수익중 +{c_ret:.1f}%)"
+                    
+                    if hit_ma20_exit:
+                        blended_ret = round((r1_gain * 0.50) + (c_ret * 0.50), 1)
+                        status_txt = f"📉 20일선 이탈 1차 매도(50% 실현) 후 잔여 보유 (+{blended_ret:+.1f}%)"
                     else:
-                        status_txt = f"🌊 눌림 진행중 ({c_ret:.1f}%)"
+                        blended_ret = round(c_ret, 1)
+                        if days_passed <= 5:
+                            status_txt = "🛒 신규 매수 (1차 50% 진입)"
+                        elif c_ret >= 0:
+                            status_txt = f"🟢 1차 매도 대기 (수익중 +{c_ret:.1f}%)"
+                        else:
+                            status_txt = f"🌊 눌림 진행중 ({c_ret:.1f}%)"
 
                     final_ret_pct = blended_ret
                     display_price = curr_p
@@ -5728,6 +5609,16 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 max_date_str = hit_date_str
                 display_price = entry_p
                 status_txt = "🛒 신규 매수 (1차 50% 진입)"
+                is_closed = False
+                exit_bar_idx = total_eval_len
+
+            last_hit_bar = pos
+            if is_closed:
+                last_is_closed = True
+                last_exit_bar = exit_bar_idx
+            else:
+                last_is_closed = False
+                last_exit_bar = 999999
 
             is_krw = any(x in ticker for x in [".KS", ".KQ", "-KRW"])
             fmt_limit = f"₩{calc_entry:,.0f}" if is_krw else f"${calc_entry:,.2f}"
@@ -5735,43 +5626,35 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             fmt_curr  = f"₩{display_price:,.0f}" if is_krw else f"${display_price:,.2f}"
             fmt_max   = f"₩{max_so_far:,.0f}" if is_krw else f"${max_so_far:,.2f}"
 
-            # 💡 [진입 시점 순수 기술 점수 (포착 당시 지표로만 산출, 미래수익률 배제)]
             entry_score = round(70.0 + (108.0 - abs(disp_20 - 101.5)) * 0.15 + (rsi_val * 0.1), 1)
-            # 💡 [일·주·월봉 3대 차트 결합 1년 상승 잠재력 점수 & 1년 실제 목표 수익률 산출]
-            mtf_score = round(70.0 + (108.0 - abs(disp_20 - 101.5)) * 0.15 + (rsi_val * 0.1) + (max_ret_pct * 0.25), 1)
-            target_1y_pct = round(max(35.0, max_ret_pct * 1.45 + 12.0), 1)
+            target_1y_pct = round(max(35.0, max_ret_pct * 1.35 + 15.0), 1)
 
-            if is_class_a:
-                pf_tag = "🚀 [정배열 롱런] 주도주 대파동"
-            elif disp_20 <= 102.5 and rsi_val <= 58.0:
-                pf_tag = "⚡ [1~5봉 단기] 바닥 눌림 안정형"
-            else:
-                pf_tag = "⚡ [1~5봉 단기] 모멘텀 추세형"
+            stock_tendency = "🚀 [정배열 롱런] 주도주 대파동" if is_class_a else "⚡ [1~5봉 단기] 모멘텀 돌파형" if "돌파" in status_txt or disp_20 > 103 else "⚡ [1~5봉 단기] 바닥 눌림 안정형"
 
-            m_flag = "🇰🇷 국내" if "국내" in str(m_label) else ("🇺🇸 미국" if "미국" in str(m_label) else str(m_label))
-            hits.append({
-                "시장": m_flag,
+            res_obj = {
+                "시장": "🇰🇷 국내" if is_kr else "🇺🇸 미국",
                 "종목명": get_korean_name(name),
                 "티커": ticker,
                 "추천 포착 날짜": hit_date_str,
-                "추천 진입가": fmt_limit,   # 🎯 추천 진입가는 100% 원본 지정가 추천가 표출
-                "평단가": fmt_avg,          # 🎯 평단가는 갭상승 시 당일 시초가 체결 반영 평단가 표출
+                "추천 진입가": fmt_limit,
+                "평단가": fmt_avg,
                 "현재가": fmt_curr,
                 "기간 최고가": fmt_max,
                 "현재/최종 수익률 (%)": final_ret_pct,
                 "최대 수익률 (%)": max_ret_pct,
                 "최대 수익률 도달일": max_date_str,
                 "1년 목표 수익률 (%)": target_1y_pct,
-                "투자 성향": pf_tag,
+                "투자 성향": stock_tendency,
                 "entry_score": entry_score,
-                "mtf_score": mtf_score,
+                "mtf_score": round(entry_score + min(max_ret_pct, 50.0) * 0.1, 1),
                 "상태": status_txt,
                 "raw_curr_ret": final_ret_pct
-            })
+            }
+            hits.append(res_obj)
+
         return hits
     except Exception:
         return []
-
 def check_downtrend_breakout_and_bottom_support(df_sub):
     """
     🛡️ [6개월~1년 중장기 전용] 하향 추세선 상방 돌파 또는 수평 바닥 지지선 안착 검증
@@ -6463,11 +6346,10 @@ with main_tab2:
 </div>
 
 <div style="background: rgba(168, 85, 247, 0.08); border: 1px solid #a855f7; padding: 12px 14px; border-radius: 8px; margin-bottom: 12px;">
-    <b style="color: #c084fc; font-size: 14px;">📉 [이평선 지지 이탈 시 단계별 분할 매도 원칙 (20 / 60 / 120 / 200일선)]</b><br>
-    • <b>1차 이평 이탈 (20일선 깨짐):</b> 단기 탄력 둔화 ➔ <b>물량 30% 분할 매도</b> (수익 챙김)<br>
-    • <b>2차 이평 이탈 (60일선 깨짐):</b> 중기 수급 이탈 ➔ <b>물량 30% 추가 매도</b> (누적 60% 실현)<br>
-    • <b>3차 이평 이탈 (120일선 깨짐):</b> 대세 지지선 붕괴 ➔ <b>물량 20% 추가 매도</b> (누적 80% 실현)<br>
-    • <b>4차 최종 이탈 (200일선 깨짐):</b> 장기 경기선 이탈 ➔ <b>잔여 20% 전량 청산 완료</b> (🛡️ 청산 마감)
+    <b style="color: #c084fc; font-size: 14px;">📉 [이평선 지표 확증 2단계 분할 매도 & 전량 청산 원칙 (20 / 60일선)]</b><br>
+    • <b>1차 매도 (20일선 지지 이탈 확증):</b> 단기 탄력 둔화 & 지표 이탈 확인 ➔ <b>물량 50% 분할 매도</b> (수익 실현 및 위험 50% 방어)<br>
+    • <b>2차 매도 (60일선 지지 이탈 확증):</b> 중기 추세 이탈 확인 ➔ <b>잔여 50% 전량 매도 완료</b> (🛡️ 포지션 100% 청산 마감)<br>
+    • <b>💡 수익률 가중치 보정:</b> (1차 실현 수익률 × 50%) + (2차 실현 or 현재 잔여 수익률 × 50%)의 비중 일치 가중평균 산출
 </div>
 
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 12px;">
@@ -6699,33 +6581,25 @@ with main_tab2:
         # 🌟 [사용자 요청] 상태별 필터 (각 상태별 종목 개수 실시간 표시 & '전체 보기' 기본 선택)
         cnt_all = len(table_df)
         cnt_new = len(table_df[table_df['상태'].str.contains("신규 매수|1차 매도 대기|눌림 진행중", na=False)])
-        cnt_t1  = len(table_df[table_df['상태'].str.contains("1차 매도 후|20일선 이탈", na=False)])
-        cnt_t2  = len(table_df[table_df['상태'].str.contains("2차 매도 후|60일선 이탈", na=False)])
-        cnt_t3  = len(table_df[table_df['상태'].str.contains("3차 매도 후|120일선 이탈|텐베거", na=False)])
-        cnt_exit = len(table_df[table_df['상태'].str.contains("익절 청산|200일선 이탈", na=False)])
+        cnt_t1  = len(table_df[table_df['상태'].str.contains("20일선 이탈|1차 매도", na=False)])
+        cnt_exit = len(table_df[table_df['상태'].str.contains("익절 청산|60일선 이탈|전량 매도", na=False)])
         cnt_stop = len(table_df[table_df['상태'].str.contains("손절 청산", na=False)])
 
         opt_all  = f"전체 보기 ({cnt_all:,}개)"
         opt_new  = f"🛒 신규 매수 ({cnt_new:,}개)"
-        opt_t1   = f"✨ 1차 매도 후 보유 ({cnt_t1:,}개)"
-        opt_t2   = f"💰 2차 매도 후 보유 ({cnt_t2:,}개)"
-        opt_t3   = f"🎉 3차 매도 후 보유 ({cnt_t3:,}개)"
-        opt_exit = f"🛡️ 익절 청산 완료 ({cnt_exit:,}개)"
+        opt_t1   = f"📉 20일선 1차 매도 후 보유 ({cnt_t1:,}개)"
+        opt_exit = f"🛡️ 전량 매도·청산 완료 ({cnt_exit:,}개)"
         opt_stop = f"🚨 손절 청산 완료 ({cnt_stop:,}개)"
 
-        radio_opts = [opt_all, opt_new, opt_t1, opt_t2, opt_t3, opt_exit, opt_stop]
+        radio_opts = [opt_all, opt_new, opt_t1, opt_exit, opt_stop]
         filter_option = st.radio("🎯 상태별 종목 골라보기:", radio_opts, index=0, horizontal=True, key="rad_status_filter_v2")
         
         if filter_option == opt_new:
             table_df = table_df[table_df['상태'].str.contains("신규 매수|1차 매도 대기|눌림 진행중", na=False)]
         elif filter_option == opt_t1:
-            table_df = table_df[table_df['상태'].str.contains("1차 매도 후|20일선 이탈", na=False)]
-        elif filter_option == opt_t2:
-            table_df = table_df[table_df['상태'].str.contains("2차 매도 후|60일선 이탈", na=False)]
-        elif filter_option == opt_t3:
-            table_df = table_df[table_df['상태'].str.contains("3차 매도 후|120일선 이탈|텐베거", na=False)]
+            table_df = table_df[table_df['상태'].str.contains("20일선 이탈|1차 매도", na=False)]
         elif filter_option == opt_exit:
-            table_df = table_df[table_df['상태'].str.contains("익절 청산|200일선 이탈", na=False)]
+            table_df = table_df[table_df['상태'].str.contains("익절 청산|60일선 이탈|전량 매도", na=False)]
         elif filter_option == opt_stop:
             table_df = table_df[table_df['상태'].str.contains("손절 청산", na=False)]
 
