@@ -1306,7 +1306,7 @@ ASSETS = get_static_assets()
 # ====================================================================
 
 @st.cache_data(ttl=60) # ⚡ 1분 캐싱으로 실시간 시세 및 캔들 즉각 갱신 보장
-def bulk_preload_and_clean_market_data(ticker_list, period="1y"): # 🚀 4y -> 1y 변경
+def bulk_preload_and_clean_market_data(ticker_list, period="1y"):
     """
     🏆 [오류 0건 + 초고속 배치 엔진 + 100% 실시간 데이터 완전성 보장]
     1. 국내 주식(KRX): FinanceDataReader 병렬 멀티스레드 수집으로 NaN 누락 0% 및 당일 종가 완벽 보장
@@ -1341,8 +1341,8 @@ def bulk_preload_and_clean_market_data(ticker_list, period="1y"): # 🚀 4y -> 1
 
     # 1. 🇰🇷 [국내 주식 전수 FDR 초고속 병렬 수집]
     if kr_items:
-        # 🚀 [속도 최적화] 4년 -> 1년으로 단축 (200일 이평선 계산을 위한 완벽한 최소기간)
-        start_kr = (datetime.now() - pd.DateOffset(years=1)).strftime('%Y-%m-%d')
+        y_off = int(period.replace('y', '')) if 'y' in period else 1
+        start_kr = (datetime.now() - pd.DateOffset(years=y_off)).strftime('%Y-%m-%d')
         def fetch_kr_single(item):
             orig_t, c_code, f_t = item
             try:
@@ -1435,7 +1435,7 @@ def bulk_preload_and_clean_market_data(ticker_list, period="1y"): # 🚀 4y -> 1
 
 
 @st.cache_data(ttl=1800) # ⚡ 30분 캐싱으로 서버 차단 완벽 방지
-def get_raw_daily_data(ticker):
+def get_raw_daily_data(ticker, period='1y'):
     import time
     import requests
     import pandas as pd
@@ -1495,8 +1495,8 @@ def get_raw_daily_data(ticker):
     
     if is_kr_stock:
         try:
-            # 🚀 [빠른 스캔] 5년(years=5) -> 1년(years=1)으로 변경
-            start_kr = (datetime.now() - pd.DateOffset(years=1)).strftime('%Y-%m-%d')
+            y_off = int(period.replace('y', '')) if 'y' in period else 1
+            start_kr = (datetime.now() - pd.DateOffset(years=y_off)).strftime('%Y-%m-%d')
             df = fdr.DataReader(clean_ticker, start=start_kr)
             if df is not None and not df.empty:
                 df = df.reset_index()
@@ -1513,8 +1513,7 @@ def get_raw_daily_data(ticker):
     for attempt in range(2): 
         try:
             stock = yf.Ticker(ticker_str)
-            # 🚀 [빠른 스캔] 4년(period="4y") -> 1년(period="1y")으로 변경
-            df = stock.history(period="1y", timeout=3.5)
+            df = stock.history(period=period, timeout=3.5)
             if df is not None and not df.empty:
                 df = df.reset_index()
                 df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
@@ -5300,7 +5299,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
         if bulk_cache:
             df_hist = bulk_cache.get(ticker, bulk_cache.get(name, None))
         if df_hist is None:
-            df_hist = get_raw_daily_data(ticker)
+            df_hist = get_raw_daily_data(ticker, period="2y")
             
         df_hist = filter_closed_daily_candles(df_hist, ticker)
         if df_hist is None or len(df_hist) < 200: return []
@@ -5330,7 +5329,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
         hits = []
         total_len = len(df_proc)
-        three_years_ago_str = (datetime.now() - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
+        three_years_ago_str = (datetime.now() - pd.DateOffset(years=1)).strftime('%Y-%m-%d')  # 1년으로 단축
         three_years_ago_dt = pd.to_datetime(three_years_ago_str)
         date_col = pd.to_datetime(df_proc['Date']).dt.tz_localize(None)
         target_indices = df_proc[date_col >= three_years_ago_dt].index
@@ -6048,9 +6047,9 @@ def bg_scan_worker_midterm(assets_dict):
     # ⚡ [수정 핵심 1] 전 시장 종목 초고속 배치 수집 (IP 차단 방지 및 초고속 완료)
     status_box.markdown("🚀 **전 시장 종목 시세 초고속 실시간 배치 수집 중...**")
     tickers = [t[1] for t in all_tasks]
-    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="4y")
+    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="2y")
 
-    status_box.markdown("🚀 **과거 3년 정예 시그널 초고속 전수 스캔 중...**")
+    status_box.markdown("🚀 **과거 1년 정예 시그널 초고속 전수 스캔 중...**")
     historical_hits = []
     processed = 0
 
@@ -6149,9 +6148,9 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     # ⚡ [수정 핵심 2] 500개 전 종목 초고속 배치 수집 (10분 ➔ 3초 완료)
     status_box.markdown("🚀 **전 시장 종목 시세 초고속 실시간 배치 수집 중...**")
     tickers = [t[2] for t in all_tasks]
-    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="4y")
+    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="2y")
 
-    status_box.markdown("🚀 **과거 3년 정예 시그널 초고속 전수 스캔 중...**")
+    status_box.markdown("🚀 **과거 1년 정예 시그널 초고속 전수 스캔 중...**")
     historical_hits = []
     processed = 0
 
@@ -6261,7 +6260,7 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     historical_hits = filtered_hits
 
     progress_bar.progress(1.0)
-    status_box.success(f"✅ 초고속 과거 3년 스캔 완료! 총 {len(historical_hits)}건의 정예 추천 포착 기록을 찾았습니다.")
+    status_box.success(f"✅ 초고속 과거 1년 스캔 완료! 총 {len(historical_hits)}건의 정예 추천 포착 기록을 찾았습니다.")
 
     if historical_hits:
         conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -6384,25 +6383,25 @@ with main_tab2:
 </div>
 </div>""", unsafe_allow_html=True)
 
-    st.markdown("#### 과거 3년 전체 종목 추천 날짜 & 수익률 전수 조사")
-    st.markdown("<div style='color: #38bdf8; font-weight: bold; font-size: 14px; margin-bottom: 10px;'>✨ 과거 3년 내 포착된 종목과 추천 날짜 및 현재/최고 수익률 표 ✨</div>", unsafe_allow_html=True)
+    st.markdown("#### 과거 1년 전체 종목 추천 날짜 & 수익률 전수 조사")
+    st.markdown("<div style='color: #38bdf8; font-weight: bold; font-size: 14px; margin-bottom: 10px;'>✨ 과거 1년 내 포착된 종목과 추천 날짜 및 현재/최고 수익률 표 ✨</div>", unsafe_allow_html=True)
 
     # 💡 국내 주식 / 미국 주식 개별 스캔 및 전체 전수 스캔 분할 선택 버튼
     col_btn_kr, col_btn_us, col_btn_all = st.columns(3)
     with col_btn_kr:
-        if st.button("🇰🇷 국내 주식 과거 3년 전수 스캔", key="btn_history_kr_scan", use_container_width=True):
+        if st.button("🇰🇷 국내 주식 과거 1년 전수 스캔", key="btn_history_kr_scan", use_container_width=True):
             init_midterm_db()
             history_results = scan_all_historical_midterm_signals(ASSETS, target_market="국내")
             if history_results:
                 st.session_state['history_scan_table'] = history_results
     with col_btn_us:
-        if st.button("🇺🇸 미국 주식 과거 3년 전수 스캔", key="btn_history_us_scan", use_container_width=True):
+        if st.button("🇺🇸 미국 주식 과거 1년 전수 스캔", key="btn_history_us_scan", use_container_width=True):
             init_midterm_db()
             history_results = scan_all_historical_midterm_signals(ASSETS, target_market="미국")
             if history_results:
                 st.session_state['history_scan_table'] = history_results
     with col_btn_all:
-        if st.button("🔥 전체(국내+미국) 3년 전수 스캔", key="btn_history_all_scan", use_container_width=True):
+        if st.button("🔥 전체(국내+미국) 1년 전수 스캔", key="btn_history_all_scan", use_container_width=True):
             init_midterm_db()
             history_results = scan_all_historical_midterm_signals(ASSETS, target_market="전체")
             if history_results:
@@ -6442,7 +6441,7 @@ with main_tab2:
 
         st.markdown(f"""
         <div style="background-color: #1e2230; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 15px;">
-            <div style="font-size: 13px; color: #ffffff; font-weight: bold; margin-bottom: 6px;">📊 과거 3년 전수 포착 성과 종합 보고서</div>
+            <div style="font-size: 13px; color: #ffffff; font-weight: bold; margin-bottom: 6px;">📊 과거 1년 전수 포착 성과 종합 보고서</div>
             <div style="display: flex; justify-content: space-around; text-align: center;">
                 <div><span style="font-size: 11px; color: #94a3b8;">포착 건수</span><br><b style="font-size: 15px; color: #ffffff;">{total_hits}건</b></div>
                 <div><span style="font-size: 11px; color: #94a3b8;">승률</span><br><b style="font-size: 15px; color: #10b981;">{win_rate:.1f}%</b></div>
@@ -6579,7 +6578,7 @@ with main_tab2:
             if '최대 수익률 도달일' in table_df.columns:
                 table_df.loc[is_today_mask, '최대 수익률 도달일'] = today_date_str
 
-        st.markdown(f"##### 🏆 과거 3년 포착 종목 순위표 (총 **{len(table_df):,}개** 포착)")
+        st.markdown(f"##### 🏆 과거 1년 포착 종목 순위표 (총 **{len(table_df):,}개** 포착)")
 
         # 🌟 [사용자 요청] 상태별 필터 (각 상태별 종목 개수 실시간 표시 & '전체 보기' 기본 선택)
         cnt_all = len(table_df)
@@ -6650,4 +6649,4 @@ with main_tab2:
             st.markdown(f"🗓️ **{selected_date_filter} 포착 종목 리스트:**")
             st.dataframe(filtered_df, use_container_width=True, hide_index=True)
     else:
-        st.info("💡 위의 [과거 3년 추천 날짜/수익률 전체 전수 스캔] 버튼을 누르면 전체 주식의 추천 날짜와 수익률 표가 완성됩니다.")
+        st.info("💡 위의 [과거 1년 추천 날짜/수익률 전체 전수 스캔] 버튼을 누르면 전체 주식의 추천 날짜와 수익률 표가 완성됩니다.")
