@@ -1338,7 +1338,8 @@ def bulk_preload_and_clean_market_data(ticker_list, period="1y"):
 
     # 1. 🇰🇷 [국내 주식 전수 FDR 초고속 병렬 수집 - 누락/NaN 원천 차단]
     if kr_items:
-        start_kr = (datetime.now() - pd.DateOffset(years=1)).strftime('%Y-%m-%d')
+        y_off = int(period.replace('y', '')) if 'y' in period else 1
+        start_kr = (datetime.now() - pd.DateOffset(years=y_off)).strftime('%Y-%m-%d')
         def fetch_kr_single(item):
             orig_t, c_code, f_t = item
             try:
@@ -1430,7 +1431,7 @@ def bulk_preload_and_clean_market_data(ticker_list, period="1y"):
 
 
 @st.cache_data(ttl=1800) # ⚡ 30분 캐싱으로 서버 차단 완벽 방지
-def get_raw_daily_data(ticker):
+def get_raw_daily_data(ticker, period='1y'):
     import time
     import requests
     import pandas as pd
@@ -1488,7 +1489,8 @@ def get_raw_daily_data(ticker):
     
     if is_kr_stock:
         try:
-            start_kr = (datetime.now() - pd.DateOffset(years=1)).strftime('%Y-%m-%d')
+            y_off = int(period.replace('y', '')) if 'y' in period else 1
+            start_kr = (datetime.now() - pd.DateOffset(years=y_off)).strftime('%Y-%m-%d')
             df = fdr.DataReader(clean_ticker, start=start_kr)
             if df is not None and not df.empty:
                 df = df.reset_index()
@@ -1505,7 +1507,7 @@ def get_raw_daily_data(ticker):
     for attempt in range(2): # 최대 2회 재시도
         try:
             stock = yf.Ticker(ticker_str)
-            df = stock.history(period="1y", timeout=3.5)
+            df = stock.history(period=period, timeout=3.5)
             if df is not None and not df.empty:
                 df = df.reset_index()
                 df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
@@ -1521,7 +1523,7 @@ def get_raw_daily_data(ticker):
     for attempt in range(2): # 최대 2회 재시도
         try:
             stock = yf.Ticker(ticker_str)
-            df = stock.history(period="1y", timeout=3.5)
+            df = stock.history(period=period, timeout=3.5)
             if df is not None and not df.empty:
                 df = df.reset_index()
                 df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
@@ -5299,7 +5301,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
         if bulk_cache:
             df_hist = bulk_cache.get(ticker, bulk_cache.get(name, None))
         if df_hist is None:
-            df_hist = get_raw_daily_data(ticker)
+            df_hist = get_raw_daily_data(ticker, period="4y")
             
         df_hist = filter_closed_daily_candles(df_hist, ticker)
         if df_hist is None or len(df_hist) < 200: return []
@@ -6047,7 +6049,7 @@ def bg_scan_worker_midterm(assets_dict):
     # ⚡ [수정 핵심 1] 전 시장 종목 초고속 배치 수집 (IP 차단 방지 및 초고속 완료)
     status_box.markdown("🚀 **전 시장 종목 시세 초고속 실시간 배치 수집 중...**")
     tickers = [t[1] for t in all_tasks]
-    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="1y")
+    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="4y")
 
     status_box.markdown("🚀 **과거 3년 정예 시그널 초고속 전수 스캔 중...**")
     historical_hits = []
@@ -6150,7 +6152,7 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     # ⚡ [수정 핵심 2] 500개 전 종목 초고속 배치 수집 (10분 ➔ 3초 완료)
     status_box.markdown("🚀 **전 시장 종목 시세 초고속 실시간 배치 수집 중...**")
     tickers = [t[2] for t in all_tasks]
-    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="1y")
+    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="4y")
 
     status_box.markdown("🚀 **과거 3년 정예 시그널 초고속 전수 스캔 중...**")
     historical_hits = []
