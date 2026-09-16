@@ -618,13 +618,13 @@ yf.Ticker = FakeTicker
 macro_trends = {"KR": True, "US": True, "COIN": True}
 import streamlit as st
 try:
-    from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
+    from streamlit.runtime.scriptrunner import get_script_run_ctx  # type: ignore, add_script_run_ctx
 except ImportError:
     try:
-        from streamlit.runtime.scriptrunner_utils import get_script_run_ctx, add_script_run_ctx
+        from streamlit.runtime.scriptrunner_utils import get_script_run_ctx  # type: ignore, add_script_run_ctx
     except ImportError:
         try:
-            from streamlit.scriptrunner import get_script_run_ctx, add_script_run_ctx
+            from streamlit.scriptrunner import get_script_run_ctx  # type: ignore, add_script_run_ctx
         except ImportError:
             def get_script_run_ctx():
                 return None
@@ -798,10 +798,11 @@ def get_realtime_sector_influence():
                 df_close = pd.DataFrame()
                 df_vol = pd.DataFrame()
                 
+                recent_start = (pd.Timestamp.now() - pd.DateOffset(months=1)).strftime('%Y-%m-%d')
                 def fetch_kr_single(item):
                     full_t, clean_t = item
                     try:
-                        df_single = fdr.DataReader(clean_t, start='2024-01-01').tail(7)
+                        df_single = fdr.DataReader(clean_t, start=recent_start).tail(7)
                         if len(df_single) >= 2:
                             return full_t, df_single['Close'], df_single['Volume']
                     except Exception:
@@ -1303,7 +1304,7 @@ ASSETS = get_static_assets()
 # ====================================================================
 
 @st.cache_data(ttl=60) # ⚡ 1분 캐싱으로 실시간 시세 및 캔들 즉각 갱신 보장
-def bulk_preload_and_clean_market_data(ticker_list, period="4y"):
+def bulk_preload_and_clean_market_data(ticker_list, period="1y"):
     """
     🏆 [오류 0건 + 초고속 배치 엔진 + 100% 실시간 데이터 완전성 보장]
     1. 국내 주식(KRX): FinanceDataReader 병렬 멀티스레드 수집으로 NaN 누락 0% 및 당일 종가 완벽 보장
@@ -1337,7 +1338,7 @@ def bulk_preload_and_clean_market_data(ticker_list, period="4y"):
 
     # 1. 🇰🇷 [국내 주식 전수 FDR 초고속 병렬 수집 - 누락/NaN 원천 차단]
     if kr_items:
-        start_kr = (datetime.now() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
+        start_kr = (datetime.now() - pd.DateOffset(years=1)).strftime('%Y-%m-%d')
         def fetch_kr_single(item):
             orig_t, c_code, f_t = item
             try:
@@ -1487,7 +1488,7 @@ def get_raw_daily_data(ticker):
     
     if is_kr_stock:
         try:
-            start_kr = (datetime.now() - pd.DateOffset(years=5)).strftime('%Y-%m-%d')
+            start_kr = (datetime.now() - pd.DateOffset(years=1)).strftime('%Y-%m-%d')
             df = fdr.DataReader(clean_ticker, start=start_kr)
             if df is not None and not df.empty:
                 df = df.reset_index()
@@ -1504,7 +1505,7 @@ def get_raw_daily_data(ticker):
     for attempt in range(2): # 최대 2회 재시도
         try:
             stock = yf.Ticker(ticker_str)
-            df = stock.history(period="4y", timeout=3.5)
+            df = stock.history(period="1y", timeout=3.5)
             if df is not None and not df.empty:
                 df = df.reset_index()
                 df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
@@ -1520,7 +1521,7 @@ def get_raw_daily_data(ticker):
     for attempt in range(2): # 최대 2회 재시도
         try:
             stock = yf.Ticker(ticker_str)
-            df = stock.history(period="4y", timeout=3.5)
+            df = stock.history(period="1y", timeout=3.5)
             if df is not None and not df.empty:
                 df = df.reset_index()
                 df = df.rename(columns={'Date':'Date', 'Open':'Open', 'High':'High', 'Low':'Low', 'Close':'Close', 'Volume':'Volume'})
@@ -1615,7 +1616,8 @@ def check_benchmark_regime(ticker_symbol):
         is_kr_asset = any(x in str(ticker_symbol) for x in [".KS", ".KQ", "-KRW"])
         
         if is_kr_asset:
-            idx_df = fdr.DataReader('KS11', start='2023-01-01').tail(150)
+            start_dt = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+            idx_df = fdr.DataReader('KS11', start=start_dt).tail(150)
             idx_name = "KOSPI"
         else:
             sp500 = yf.Ticker("^GSPC")
@@ -5969,7 +5971,7 @@ def bg_scan_worker(assets_dict):
     # ⚡ [수정 핵심] 50개 청크 단위 사전 고속 수집 가동 (IP 차단 및 KeyError 완전 방지)
     status_box.markdown("🚀 **1/2단계: 전 시장 종목 시세 초고속 배치 수집 중...**")
     tickers = [t[1] for t in all_tasks]
-    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="2y")
+    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="1y")
 
     status_box.markdown("🚀 **2/2단계: 실시간 퀀트 시그널 정밀 연산 중...**")
 
@@ -6045,10 +6047,12 @@ def bg_scan_worker_midterm(assets_dict):
     # ⚡ [수정 핵심 1] 전 시장 종목 초고속 배치 수집 (IP 차단 방지 및 초고속 완료)
     status_box.markdown("🚀 **전 시장 종목 시세 초고속 실시간 배치 수집 중...**")
     tickers = [t[1] for t in all_tasks]
-    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="4y")
+    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="1y")
 
     status_box.markdown("🚀 **과거 3년 정예 시그널 초고속 전수 스캔 중...**")
     historical_hits = []
+    res_kr = []
+    res_us = []
     processed = 0
 
     def midterm_task(item_tuple):
@@ -6115,7 +6119,7 @@ def bg_scan_worker_midterm(assets_dict):
 # ====================================================================
 def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        from streamlit.runtime.scriptrunner import get_script_run_ctx  # type: ignore
         ctx = get_script_run_ctx()
     except Exception:
         ctx = None
@@ -6146,10 +6150,12 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     # ⚡ [수정 핵심 2] 500개 전 종목 초고속 배치 수집 (10분 ➔ 3초 완료)
     status_box.markdown("🚀 **전 시장 종목 시세 초고속 실시간 배치 수집 중...**")
     tickers = [t[2] for t in all_tasks]
-    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="4y")
+    bulk_cache = bulk_preload_and_clean_market_data(tickers, period="1y")
 
     status_box.markdown("🚀 **과거 3년 정예 시그널 초고속 전수 스캔 중...**")
     historical_hits = []
+    res_kr = []
+    res_us = []
     processed = 0
 
     with ThreadPoolExecutor(max_workers=30) as executor:
