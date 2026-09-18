@@ -1358,12 +1358,17 @@ def bulk_preload_and_clean_market_data(ticker_list, period="1y"):
                 pass
             return orig_t, f_t, c_code, None
 
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            for orig_t, f_t, c_code, df_res in executor.map(fetch_kr_single, kr_items):
-                if df_res is not None:
-                    cleaned_cache[orig_t] = df_res
-                    cleaned_cache[f_t] = df_res
-                    cleaned_cache[c_code] = df_res
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(fetch_kr_single, item) for item in kr_items]
+            for future in as_completed(futures, timeout=120): # 최대 2분 대기 (무한 로딩 방지)
+                try:
+                    orig_t, f_t, c_code, df_res = future.result()
+                    if df_res is not None:
+                        cleaned_cache[orig_t] = df_res
+                        cleaned_cache[f_t] = df_res
+                        cleaned_cache[c_code] = df_res
+                except Exception:
+                    continue
 
     # 2. 🇺🇸 [미국 주식 yfinance 배치 분할 수집]
     if us_tickers:
@@ -1372,9 +1377,10 @@ def bulk_preload_and_clean_market_data(ticker_list, period="1y"):
         for chunk in chunks:
             try:
                 # 🚀 기본 period 파라미터를 "1y"로 전달하여 고속 스캔
+                # threads=False로 변경하여 Streamlit 데드락/무한 로딩 방지
                 raw_bulk = yf.download(
                     chunk, period=period, group_by='ticker', 
-                    threads=True, progress=False, auto_adjust=False
+                    threads=False, progress=False, auto_adjust=False
                 )
                 if raw_bulk is not None and not raw_bulk.empty:
                     if len(chunk) == 1:
@@ -1422,12 +1428,15 @@ def bulk_preload_and_clean_market_data(ticker_list, period="1y"):
                 pass
             return t_item, None
 
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             futures = [executor.submit(fetch_missing_single, t) for t in missing_tickers]
-            for future in as_completed(futures):
-                t_item, df_res = future.result()
-                if df_res is not None:
-                    cleaned_cache[t_item] = df_res
+            for future in as_completed(futures, timeout=60): # 최대 1분 대기 (무한 로딩 방지)
+                try:
+                    t_item, df_res = future.result()
+                    if df_res is not None:
+                        cleaned_cache[t_item] = df_res
+                except Exception:
+                    continue
                     fmt_key = clean_map.get(t_item, t_item)
                     cleaned_cache[fmt_key] = df_res
 
@@ -5413,6 +5422,22 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 if ((nearest_upper - c_close) / c_close) * 100.0 < 5.0:
                     is_upper_ma_blocked = True
 
+            # 🚀 [신규] 오버헤드 저항선 돌파력(Breakout Power) 검증
+            has_breakout_power = False
+            bb_upper = float(latest.get('BB_Upper', c_close))
+            bb_lower = float(latest.get('BB_Lower', c_close))
+            bb_upper_prev = float(prev.get('BB_Upper', bb_upper))
+            bb_lower_prev = float(prev.get('BB_Lower', bb_lower))
+            
+            is_bb_expanding = (bb_upper - bb_lower) > (bb_upper_prev - bb_lower_prev) * 1.05
+            is_vol_surge = vol_curr > vol_ma20 * 1.5
+            is_macd_accelerating = macd_hist_curr > macd_hist_prev * 1.2 and macd_hist_curr > 0
+            
+            if is_upper_ma_blocked:
+                if is_bb_expanding and is_vol_surge and is_macd_accelerating and is_obv_supported:
+                    has_breakout_power = True
+                    is_upper_ma_blocked = False  # 돌파력 입증 시 패스
+
             is_valid_breakout, _ = verify_ma_breakout_master_rules(df_proc, pos=pos)
             is_valid_candle_pattern, _ = verify_5_candle_chart_patterns(df_proc, pos=pos)
 
@@ -5436,33 +5461,45 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 ma20_val = float(latest.get('MA_20', c_close))
                 ma20_prev_val = float(prev.get('MA_20', ma20_val))
                 ma5_prev_val = float(prev.get('MA_5', ma5_val))
-                if ma20_val <= ma20_prev_val or (c_close < ma5_val and c_close < ma20_val) or (ma5_val <= ma5_prev_val and c_close < ma5_val):
+                # 기존의 과도하게 빡빡했던 MACD, DMI, RSI 고정 필터를 완화하고 종합 점수에 맡깁니다.
+                if ma20_val <= ma20_prev_val and c_close < ma20_val:
                     continue
 
-                macd_val = float(latest.get('MACD', 0))
-                signal_val = float(latest.get('Signal', 0))
                 macd_hist_val = float(latest.get('MACD_Hist', 0))
                 macd_hist_prev_val = float(prev.get('MACD_Hist', macd_hist_val))
                 c_prev_close = float(prev.get('Close', c_close))
                 c_open_val = float(latest.get('Open', c_close))
                 
-                if macd_val < signal_val or macd_hist_val <= 0:
+                # 완전 하락세 꺾인 종목만 1차 필터링
+                if (macd_hist_val <= macd_hist_prev_val) and (c_close < c_open_val) and (c_close < c_prev_close):
                     continue
 
-                if (macd_hist_val <= macd_hist_prev_val) and (c_close < c_open_val or c_close < c_prev_close):
-                    continue
-
-                plus_di_val = float(latest.get('Plus_DI', 50))
-                minus_di_val = float(latest.get('Minus_DI', 0))
-                if minus_di_val > plus_di_val:
-                    continue
-
-                if rsi_val > 70.0 or rsi_val < 42.0 or obv_curr < obv_ma10:
+                # RSI 30 미만(과매도 지속) 또는 75 초과(과매수 꼭지)만 제외
+                if rsi_val > 75.0 or rsi_val < 30.0 or obv_curr < obv_ma10:
                     continue
 
             hit_date_str = hit_dt.strftime('%Y-%m-%d')
-            calc_entry, _ = calculate_smart_entry_price(df_proc.iloc[:pos+1], ai_data={})
-            if calc_entry <= 0: calc_entry = round(c_close, 2)
+            
+            # 🎯 [신규] 현실적 추천 진입가 (Entry Price) 정밀 산출 로직
+            # 1. 볼린저 상단 돌파 장대양봉: 양봉 몸통 50% 되돌림
+            # 2. RSI 눌림목 (40~55): 20일/60일선 중 근접 지지선 터치
+            calc_entry = c_close
+            ma20_val_entry = float(latest.get('MA_20', c_close))
+            ma60_val_entry = float(latest.get('MA_60', c_close))
+            c_open_val = float(latest.get('Open', c_close))
+            bb_upper_entry = float(latest.get('BB_Upper', c_close))
+            
+            is_breakout_candle = (c_close > c_open_val) and (c_close > bb_upper_entry)
+            
+            if is_breakout_candle:
+                calc_entry = (c_close + c_open_val) / 2.0
+            elif 40.0 <= rsi_val <= 55.0:
+                supports = [m for m in [ma20_val_entry, ma60_val_entry] if m < c_close]
+                if supports:
+                    calc_entry = max(supports) * 1.005 # 지지선 0.5% 위
+            
+            if calc_entry <= 0 or calc_entry > c_close * 1.05: 
+                calc_entry = round(c_close, 2)
 
             after_df = df_proc.iloc[pos + 1:]
             if not after_df.empty:
@@ -5628,10 +5665,73 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
             fmt_curr  = f"₩{display_price:,.0f}" if is_krw else f"${display_price:,.2f}"
             fmt_max   = f"₩{max_so_far:,.0f}" if is_krw else f"${max_so_far:,.2f}"
 
-            entry_score = round(70.0 + (108.0 - abs(disp_20 - 101.5)) * 0.15 + (rsi_val * 0.1), 1)
             target_1y_pct = round(max(35.0, max_ret_pct * 1.35 + 15.0), 1)
 
             stock_tendency = "🚀 [정배열 롱런] 주도주 대파동" if is_class_a else "⚡ [1~5봉 단기] 모멘텀 돌파형" if "돌파" in status_txt or disp_20 > 103 else "⚡ [1~5봉 단기] 바닥 눌림 안정형"
+
+            # 🎯 [신규] 이평선(5, 20, 60, 120, 200) 정배열 및 이격도 기반 추가 가점 산출
+            ma5_val = float(df_proc['Close'].iloc[max(0, pos-4):pos+1].mean())
+            ma20_val = float(latest.get('MA_20', c_close))
+            ma60_val = float(latest.get('MA_60', c_close))
+            ma120_val = float(latest.get('MA_120', c_close))
+            ma200_val = float(latest.get('MA_200', c_close))
+            
+            ma_align_bonus = 0.0
+            if ma5_val > ma20_val: ma_align_bonus += 2.0
+            if ma20_val > ma60_val: ma_align_bonus += 3.0
+            if ma60_val > ma120_val: ma_align_bonus += 3.0
+            if ma120_val > ma200_val: ma_align_bonus += 4.0
+            
+            ma_support_bonus = 0.0
+            if 1.0 <= (c_close / ma20_val) <= 1.03: ma_support_bonus += 3.0
+            elif 1.0 <= (c_close / ma60_val) <= 1.05: ma_support_bonus += 5.0
+
+            # 🎯 [신규] 성공확률 (Win Probability) - 방향성 및 수급 신뢰도
+            base_prob = 60.0
+            if ma20_val > ma60_val and ma60_val > ma120_val:
+                base_prob += 10.0 # 완벽한 정배열
+            elif c_close > ma20_val:
+                base_prob += 5.0  # 20일선 지지
+                
+            vol_score = 0.0
+            if 'is_vol_surge' in locals() and is_vol_surge: vol_score += 15.0
+            if 'is_obv_supported' in locals() and is_obv_supported: vol_score += 10.0
+            
+            breakout_prob_bonus = 15.0 if 'has_breakout_power' in locals() and has_breakout_power else 0.0
+            
+            win_prob = min(98.0, base_prob + vol_score + breakout_prob_bonus)
+
+            # ⚡ [신규] 수익률 극대화 타이밍 (Timing Score) - 완벽한 진입 시점
+            timing_score = 50.0
+            if 40.0 <= rsi_val <= 50.0:
+                timing_score += 25.0  # 최적의 눌림목
+            elif 50.0 < rsi_val <= 60.0:
+                timing_score += 10.0  # 상승 추세
+            
+            # 글로벌 최상위 단타 지표: TTM Squeeze (볼린저가 켈트너 안으로 수축 후 발산)
+            was_squeeze = bool(prev.get('Squeeze_On', False)) if 'Squeeze_On' in prev else False
+            is_squeeze = bool(latest.get('Squeeze_On', False)) if 'Squeeze_On' in latest else False
+            is_squeeze_breakout = was_squeeze and not is_squeeze
+            
+            if 'is_bb_expanding' in locals() and is_bb_expanding:
+                timing_score += 10.0  # 일반적인 밴드 발산
+                if is_squeeze_breakout:
+                    timing_score += 15.0 # TTM 스퀴즈 돌파 (단기 폭발력 최고조)
+            
+            lower_shadow = min(c_close, c_open) - c_low_val if 'c_open' in locals() else 0.0
+            candle_range_val = c_high - c_low_val if 'c_high' in locals() else 0.0
+            if candle_range_val > 0 and (lower_shadow / candle_range_val > 0.4): 
+                timing_score += 10.0
+                
+            timing_score = min(98.0, timing_score)
+
+            # 🎯 [신규] 손익비(Risk/Reward) 및 10% 단기 목표
+            target_1y_pct = 10.0
+            rr_ratio = max_ret_pct / 4.0 if max_ret_pct > 0 else 0.0
+            rr_score = min(98.0, max(40.0, rr_ratio * 15.0 + 20.0))
+            
+            # 🏆 최종 결합 점수 (성공확률 40% + 타이밍 40% + 손익비 20%)
+            final_comb_score = round((win_prob * 0.4) + (timing_score * 0.4) + (rr_score * 0.2), 1)
 
             res_obj = {
                 "시장": "🇰🇷 국내" if is_kr else "🇺🇸 미국",
@@ -5645,10 +5745,13 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 "현재/최종 수익률 (%)": final_ret_pct,
                 "최대 수익률 (%)": max_ret_pct,
                 "최대 수익률 도달일": max_date_str,
-                "1년 목표 수익률 (%)": target_1y_pct,
+                "단기 목표 수익률 (%)": target_1y_pct,
                 "투자 성향": stock_tendency,
-                "entry_score": entry_score,
-                "mtf_score": round(entry_score + min(max_ret_pct, 50.0) * 0.1, 1),
+                "성공확률 (%)": round(win_prob, 1),
+                "타이밍 점수": round(timing_score, 1),
+                "손익비 점수": round(rr_score, 1),
+                "entry_score": final_comb_score,
+                "mtf_score": round(final_comb_score + min(max_ret_pct, 50.0) * 0.1, 1),
                 "상태": status_txt,
                 "raw_curr_ret": final_ret_pct
             }
@@ -6209,54 +6312,30 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
             buy_score = 15.0 if "신규 매수" in status_txt else 0.0
             return rs_score + moat_score + buy_score + (entry_val * 0.5)
 
-    # 🔒 [과거 추천 영구 고정 DB 연동]
+    # 🎯 [신규] 과거 추천 데이터를 모두 종합 점수(entry_score) 기준으로 내림차순 정렬
+    sorted_all_hits = sorted(dedup_hits, key=lambda x: calc_separated_priority(x), reverse=True)
+    
+    # 🎯 날짜별로 그룹화하여 매일(거래일 기준) 최상위 2~5개 종목 추천 보장
     from collections import defaultdict
-    existing_db_map = defaultdict(list)
-    try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT rec_date, market, name, ticker, entry_price FROM midterm_recommendations")
-        for r_date, r_mkt, r_name, r_tk, r_ent in cursor.fetchall():
-            m_clean = "국내" if "국내" in str(r_mkt) else "미국"
-            existing_db_map[(str(r_date).strip(), m_clean)].append((str(r_tk).strip().upper(), r_name, r_ent))
-        conn.close()
-    except Exception:
-        pass
-
-    market_date_groups = defaultdict(list)
-    for h in dedup_hits:
-        group_key = (h['추천 포착 날짜'], "국내" if "국내" in str(h.get('시장', '')) else "미국")
-        market_date_groups[group_key].append(h)
-
+    date_groups = defaultdict(list)
+    for item in sorted_all_hits:
+        d = item.get('추천 포착 날짜', '')
+        date_groups[d].append(item)
+        
     filtered_hits = []
-    for g_key, items in market_date_groups.items():
-        date_str, m_type = g_key
-        existing_locked = existing_db_map.get(g_key, [])
-        locked_tickers = [x[0] for x in existing_locked]
-
-        # 1. DB에 이미 추천으로 저장된 과거 종목들은 100% 영구 고정 유지 (Lock)
-        selected_for_date = []
-        selected_tickers = set()
-
-        for locked_tk in locked_tickers:
-            if locked_tk not in selected_tickers:
-                matched = [it for it in items if str(it.get('티커', '')).strip().upper() == locked_tk]
-                if matched:
-                    selected_for_date.append(matched[0])
-                    selected_tickers.add(locked_tk)
-
-        # 2. 날짜/시장당 최대 5개까지 포착 당시 기술점수 순으로 보충 (3개 ➔ 5개 텀 확장)
-        remaining_candidates = [item for item in items if str(item.get('티커', '')).strip().upper() not in selected_tickers]
-        sorted_remaining = sorted(remaining_candidates, key=calc_separated_priority, reverse=True)
-
-        needed = 5 - len(selected_for_date)
-        if needed > 0:
-            for item in sorted_remaining[:needed]:
-                selected_for_date.append(item)
-                selected_tickers.add(str(item.get('티커', '')).strip().upper())
-
-        filtered_hits.extend(selected_for_date)
-
+    for d, items in date_groups.items():
+        # 각 날짜별로 중복 티커 제거 후 상위 5개 추출
+        selected_tickers_for_day = set()
+        day_hits = []
+        for it in items:
+            t_clean = str(it.get('티커', '')).strip().upper()
+            if t_clean not in selected_tickers_for_day:
+                selected_tickers_for_day.add(t_clean)
+                day_hits.append(it)
+            if len(day_hits) >= 5: # 하루 최대 5개까지만 추천
+                break
+        filtered_hits.extend(day_hits)
+                
     historical_hits = filtered_hits
 
     progress_bar.progress(1.0)
@@ -6487,7 +6566,8 @@ with main_tab2:
                     s_name = row_item['종목명']
                     s_ent  = row_item['추천 진입가']
                     s_date = row_item.get('추천 포착 날짜', '')
-                    s_target_1y = row_item.get('1년 목표 수익률 (%)', row_item['최대 수익률 (%)'] * 1.35 + 15.0)
+                    s_target_1y = row_item.get('단기 목표 수익률 (%)', 10.0)
+                    s_timing = row_item.get('타이밍 점수', 0.0)
 
                     c_ret = float(row_item.get('현재/최종 수익률 (%)', row_item.get('raw_curr_ret', 0.0)))
                     if c_ret > 0:
@@ -6510,10 +6590,10 @@ with main_tab2:
                         <div style="margin-bottom: 4px;">
                             <span style="font-weight: bold; color: {color_rank}; font-size: 14px;">{badge_rank} {s_name} <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
                         </div>
-                        <div style="font-size: 11px; color: #38bdf8; font-weight: bold; margin-bottom: 4px;">{s_tag}</div>
-                        <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
+                        <div style="font-size: 11px; color: #38bdf8; font-weight: bold; margin-bottom: 4px;">{s_tag} (타이밍: {s_timing}점)</div>
+                        <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">🎯 최적 진입가 (눌림목/돌파): <b>{s_ent}</b></div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">📊 현재 진입 수익률: <b style="color: {ret_color}; font-size: 13px;">{ret_txt}</b></div>
-                        <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
+                        <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1~5봉 단기 목표 수익률: +{s_target_1y:.1f}%</div>
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -6530,7 +6610,8 @@ with main_tab2:
                     s_name = row_item['종목명']
                     s_ent  = row_item['추천 진입가']
                     s_date = row_item.get('추천 포착 날짜', '')
-                    s_target_1y = row_item.get('1년 목표 수익률 (%)', row_item['최대 수익률 (%)'] * 1.35 + 15.0)
+                    s_target_1y = row_item.get('단기 목표 수익률 (%)', 10.0)
+                    s_timing = row_item.get('타이밍 점수', 0.0)
                     s_tag = row_item.get('투자 성향', '')
 
                     c_ret = float(row_item.get('현재/최종 수익률 (%)', row_item.get('raw_curr_ret', 0.0)))
@@ -6552,10 +6633,10 @@ with main_tab2:
                         <div style="margin-bottom: 4px;">
                             <span style="font-weight: bold; color: {color_rank}; font-size: 14px;">{badge_rank} {s_name} <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">({s_date})</span></span>
                         </div>
-                        <div style="font-size: 11px; color: #f43f5e; font-weight: bold; margin-bottom: 4px;">{s_tag}</div>
-                        <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">🎯 지정가 진입 추천가: <b>{s_ent}</b></div>
+                        <div style="font-size: 11px; color: #f43f5e; font-weight: bold; margin-bottom: 4px;">{s_tag} (타이밍: {s_timing}점)</div>
+                        <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">🎯 최적 진입가 (눌림목/돌파): <b>{s_ent}</b></div>
                         <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 4px;">📊 현재 진입 수익률: <b style="color: {ret_color}; font-size: 13px;">{ret_txt}</b></div>
-                        <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1년 실제 예상 목표 수익: +{s_target_1y:.1f}%</div>
+                        <div style="font-size: 13px; color: #10b981; font-weight: bold;">🚀 1~5봉 단기 목표 수익률: +{s_target_1y:.1f}%</div>
                     </div>
                     """, unsafe_allow_html=True)
 
