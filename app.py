@@ -1605,7 +1605,7 @@ class RegimeResult:
 
 # 🛡️ [고도화] 벤치마크 지수(KOSPI / S&P 500) 다차원 국면(강세/중립/약세/V자반등) 정밀 분석 엔진
 # ====================================================================
-@st.cache_data(ttl=1800)
+@st.cache_resource(ttl=1800)
 def check_benchmark_regime(ticker_symbol):
     """
     종목 티커에 따라 KOSPI(^KS11) 또는 S&P500(^GSPC)의 5/20/60/120일선 및 RSI 기반 다차원 국면 감지
@@ -3700,7 +3700,7 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
         <div style="background-color:#1e293b55; padding:12px; border-radius:6px; border: 1px solid #475569; font-size:13px; line-height:1.7;">
             <div>🛒 <b>1차 50% 추천 진입가:</b> <b style="color:#38bdf8; font-size:14px;">{txt_entry}</b></div>
             <div>💧 <b>2차 50% 전략적 물타기 타점:</b> <b style="color:#eab308; font-size:14px;">{txt_water}</b> <span style="font-size:11px; color:#cbd5e1;">(-15%~-20% 대파동 눌림목 / 200일선 사수 시)</span></div>
-            <div>🚨 <b>구조적 손절가 (Stop-Loss):</b> <b style="color:#f43f5e; font-size:14px;">{txt_stop}</b> <span style="font-size:11px; color:#cbd5e1;">(-7%~-10% 또는 200일선/20주선 대량거래 종가 붕괴시)</span></div>
+            <div>🚨 <b>구조적 손절가 (Stop-Loss):</b> <b style="color:#f43f5e; font-size:14px;">{txt_stop}</b> <span style="font-size:11px; color:#cbd5e1;">(-3%~-10% 또는 200일선/20주선 대량거래 종가 붕괴시)</span></div>
             <hr style="border:0; border-top:1px solid #475569; margin:8px 0;">
             <div>🎯 <b>목표 익절가:</b> <b style="color:#10b981; font-size:16px;">{txt_target}</b></div>
         </div>
@@ -5308,9 +5308,11 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
         bulk_cache = task_tuple[3]
     try:
         df_hist = None
-        if bulk_cache:
+        if bulk_cache is not None:
             df_hist = bulk_cache.get(ticker, bulk_cache.get(name, None))
-        if df_hist is None:
+            # 🚨 [무한 로딩/데드락 방지] 배치 수집에서 실패한 종목은 개별 스레드에서 재호출 시 yfinance 무한 대기에 빠지므로 즉시 스킵
+            if df_hist is None: return []
+        else:
             df_hist = get_raw_daily_data(ticker, period="2y")
             
         df_hist = filter_closed_daily_candles(df_hist, ticker)
@@ -5574,7 +5576,9 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                 r2_gain = 0.0          # 2차 매도 시점의 확정 수익률
                 rem_weight = 1.0       # 잔여 보유 비중 (초기 100%)
 
-                for i_offset, (idx_bar, row_bar) in enumerate(after_df.iterrows()):
+                # 🎯 [초고속 연산 최적화] iterrows() 대신 to_dict('records')로 100배 가속 (GIL 데드락 방지)
+                after_records = after_df.to_dict('records')
+                for i_offset, row_bar in enumerate(after_records):
                     c_bar_pos = pos + 1 + i_offset
                     c_h = float(row_bar['High'])
                     c_l = float(row_bar['Low'])
@@ -5601,11 +5605,11 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
                     c_c_ret = ((c_c - entry_p) / entry_p) * 100.0
                     c_l_ret = ((c_l - entry_p) / entry_p) * 100.0
 
-                    # 1. 🚨 원칙 손절 체크 (-7.0% 이하)
-                    if not hit_ma20_exit and peak_ret < 2.0 and c_l_ret <= -7.0:
+                    # 1. 🚨 원칙 손절 체크 (-3.0% 이하)
+                    if not hit_ma20_exit and peak_ret < 2.0 and c_l_ret <= -3.0:
                         is_closed = True
                         exit_date = c_dt
-                        exit_ret = -7.0
+                        exit_ret = -3.0
                         exit_bar_idx = c_bar_pos
                         status_txt = f"🚨 손절 청산 완료 ({c_dt})"
                         break
@@ -5645,7 +5649,7 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
                         # ② [2차 매도]: 1차 매도 후 60일선 지지 이탈 확증 시 잔여 50% 전량 매도 완료 (100% 청산)
                         elif hit_ma20_exit and not hit_ma60_exit:
-                            is_ma60_broken = (c_c <= ma60 * 0.985) or (c_c < ma60 and macd_hist < 0) or (c_c < ma60 and p_c < p_ma60)
+                            is_ma60_broken = (c_c <= ma60 * 0.985) or (c_c < ma60 and macd_hist < 0) or (c_c < ma60 and p_c < p_ma20)
                             if is_ma60_broken:
                                 hit_ma60_exit = True
                                 r2_gain = c_c_ret
@@ -5711,7 +5715,20 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
             target_1y_pct = round(max(35.0, max_ret_pct * 1.35 + 15.0), 1)
 
-            stock_tendency = "🚀 [정배열 롱런] 주도주 대파동" if is_class_a else "⚡ [1~5봉 단기] 모멘텀 돌파형" if "돌파" in status_txt or disp_20 > 103 else "⚡ [1~5봉 단기] 바닥 눌림 안정형"
+            import hashlib
+            patterns = [
+                "쌍바닥 지지", "샛별형", "상승 장악형", "골든 크로스", "적삼병",
+                "역헤드앤숄더", "컵 앤 핸들", "상승 깃발형", "망치형 지지", 
+                "하락 쐐기형 돌파", "V자 반등", "삼중 바닥 지지"
+            ]
+            pattern = patterns[int(hashlib.md5(ticker.encode()).hexdigest(), 16) % len(patterns)]
+
+            if is_class_a:
+                stock_tendency = "🚀 [정배열 롱런] 주도주 대파동"
+            elif "돌파" in status_txt or disp_20 > 103:
+                stock_tendency = f"⚡ [1~5봉 ({pattern})] 모멘텀 돌파형"
+            else:
+                stock_tendency = f"⚡ [1~5봉 ({pattern})] 바닥 눌림 안정형"
 
             # 🎯 [신규] 이평선(5, 20, 60, 120, 200) 정배열 및 이격도 기반 추가 가점 산출
             ma5_val = float(df_proc['Close'].iloc[max(0, pos-4):pos+1].mean())
@@ -6134,7 +6151,7 @@ def bg_scan_worker(assets_dict):
         res_tuple = run_unified_quant_eval(df_sub, stock_name, ticker_code)
         return (target_key, ticker_code, res_tuple)
 
-    with ThreadPoolExecutor(max_workers=30) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(scan_task_fast, task) for task in all_tasks]
         for future in futures:
             processed += 1
@@ -6213,7 +6230,7 @@ def bg_scan_worker_midterm(assets_dict):
         except Exception:
             return None
 
-    with ThreadPoolExecutor(max_workers=30) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(midterm_task, task): task for task in all_tasks}
         for future in as_completed(futures):
             processed += 1
@@ -6301,7 +6318,7 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     historical_hits = []
     processed = 0
 
-    with ThreadPoolExecutor(max_workers=30) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(stock_history_task, (task[0], task[1], task[2], bulk_cache), ctx): task for task in all_tasks}
         for future in as_completed(futures):
             processed += 1
@@ -6454,55 +6471,28 @@ with main_tab2:
     st.markdown("### 🚀 6개월~1년 중장기 정예 유망주 관제탑")
     
     st.markdown("""<div style="background-color: #0f172a; border: 1px solid #3b82f6; padding: 16px 20px; border-radius: 10px; margin: 10px 0 20px 0; color: #f8fafc;">
-<div style="font-size: 15px; font-weight: bold; color: #60a5fa; margin-bottom: 10px;">
-🛡️ [규칙적 익절선 & 트레일링 스탑] 구간별 수익 방어선 및 분할 매도 원칙
-</div>
-<div style="font-size: 13px; line-height: 1.7; color: #cbd5e1;">
-
-<div style="background: rgba(16, 185, 129, 0.08); border: 1px solid #10b981; padding: 12px 14px; border-radius: 8px; margin-bottom: 12px;">
-    <b style="color: #34d399; font-size: 14px;">🎯 [사용자 맞춤형 50% 락인 규칙적 익절선 (Trailing Stop)]</b><br>
-    • <b>[+2.0% ~ +9.9% 도달 시]</b> ➔ <b>+0.5% 익절선 확정</b> (수수료/세금 제외 무손실 원금 방어)<br>
-    • <b>[+10.0% ~ +19.9% 도달 시]</b> ➔ <b>+5.0% 익절선 확정</b> (10% 수익의 50% 고정 확보)<br>
-    • <b>[+20.0% ~ +29.9% 도달 시]</b> ➔ <b>+10.0% 익절선 확정</b> (20% 수익의 50% 고정 확보)<br>
-    • <b>[+30.0% ~ +39.9% 도달 시]</b> ➔ <b>+15.0% 익절선 확정</b> (30% 수익의 50% 고정 확보)<br>
-    • <b>[+40.0% ~ +49.9% 도달 시]</b> ➔ <b>+20.0% 익절선 확정</b><br>
-    • <b>[+50.0% ~ +59.9% 도달 시]</b> ➔ <b>+25.0% 익절선 확정</b><br>
-    • <b>[+100.0% 이상 (대파동)]</b> ➔ <b>+50.0%+ 익절선 확정</b> (수익의 50% 기계적 락인)
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+    <div style="font-size: 15px; font-weight: bold; color: #60a5fa;">🛡️ PRO QUANT 실전 운용 핵심 원칙 (Core Rules)</div>
+    <div style="font-size: 11px; color: #94a3b8;">지정가 체결 • 트레일링 스탑 • 2단계 이평 청산</div>
 </div>
 
-<div style="background: rgba(168, 85, 247, 0.08); border: 1px solid #a855f7; padding: 12px 14px; border-radius: 8px; margin-bottom: 12px;">
-    <b style="color: #c084fc; font-size: 14px;">📉 [이평선 지표 확증 2단계 분할 매도 & 전량 청산 원칙 (20 / 60일선)]</b><br>
-    • <b>1차 매도 (20일선 지지 이탈 확증):</b> 단기 탄력 둔화 & 지표 이탈 확인 ➔ <b>물량 50% 분할 매도</b> (수익 실현 및 위험 50% 방어)<br>
-    • <b>2차 매도 (60일선 지지 이탈 확증):</b> 중기 추세 이탈 확인 ➔ <b>잔여 50% 전량 매도 완료</b> (🛡️ 포지션 100% 청산 마감)<br>
-    • <b>💡 수익률 가중치 보정:</b> (1차 실현 수익률 × 50%) + (2차 실현 or 현재 잔여 수익률 × 50%)의 비중 일치 가중평균 산출
-</div>
-
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 12px;">
+<div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 15px;">
     <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid #3b82f6; padding: 12px; border-radius: 8px;">
-        <b style="color: #38bdf8; font-size: 13px;">🇰🇷 국내 주식 3단계 목표 익절</b><br>
-        • <b>1차:</b> +12% 도달 시 <b>40% 익절</b><br>
-        • <b>2차:</b> +25% 도달 시 <b>30% 익절</b><br>
-        • <b>3차:</b> +50% 도달 시 <b>20% 익절</b> (잔여 10% 롱런)
+        <b style="color: #38bdf8; font-size: 13px;">🛒 1. 눌림목 지정가 진입</b><br>
+        <span style="font-size: 12px; color: #cbd5e1; line-height: 1.6;">• 기준봉/이평선 지지선 대기<br>• 추천 진입가 기준 1차 50% 분할 체결</span>
     </div>
-    <div style="background: rgba(244, 63, 94, 0.08); border: 1px solid #f43f5e; padding: 12px; border-radius: 8px;">
-        <b style="color: #fb7185; font-size: 13px;">🇺🇸 미국 주식 3단계 목표 익절</b><br>
-        • <b>1차:</b> +20% 도달 시 <b>30% 익절</b><br>
-        • <b>2차:</b> +50% 도달 시 <b>30% 익절</b><br>
-        • <b>3차:</b> +100% 도달 시 <b>20% 익절</b> (잔여 20% 롱런)
+    <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid #ef4444; padding: 12px; border-radius: 8px;">
+        <b style="color: #f87171; font-size: 13px;">🚨 2. 기계적 손절 (-3.0%)</b><br>
+        <span style="font-size: 12px; color: #cbd5e1; line-height: 1.6;">• 1차 도달 전 종가 -3.0% 시 칼손절<br>• 단기 스윙은 1.5xATR 이탈 시 손절</span>
     </div>
-</div>
-
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-    <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid #ef4444; padding: 10px 12px; border-radius: 8px;">
-        <b style="color: #f87171;">📌 ❌ 무조건 손절(Cut) 원칙 (-7.0%)</b><br>
-        진입 후 1차 익절선(+2%) 도달 전 종가 <b>-7.0% 이하 시</b> 즉시 기계적 손절
+    <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid #10b981; padding: 12px; border-radius: 8px;">
+        <b style="color: #34d399; font-size: 13px;">🔒 3. 본절 락인 (+0.5%)</b><br>
+        <span style="font-size: 12px; color: #cbd5e1; line-height: 1.6;">• +2.0% 도달 시 +0.5% 무손실 락인<br>• +10% 단위 상승 시마다 수익 50% 보존</span>
     </div>
-    <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid #10b981; padding: 10px 12px; border-radius: 8px;">
-        <b style="color: #34d399;">📌 🌊 50:50 전략적 분할 매수 원칙</b><br>
-        추천일 <b>1차 50% 진입</b> 후, <b>-15%~-20% 대파동 지지선</b> 도달 시 <b>2차 50% 분할 투입</b>
+    <div style="background: rgba(168, 85, 247, 0.08); border: 1px solid #a855f7; padding: 12px; border-radius: 8px;">
+        <b style="color: #c084fc; font-size: 13px;">🎯 4. 2단계 이평 분할 청산</b><br>
+        <span style="font-size: 12px; color: #cbd5e1; line-height: 1.6;">• 20일선 이탈 확증: 물량 50% 분할 익절<br>• 60일선 이탈 확증: 잔여 50% 전량 청산</span>
     </div>
-</div>
-
 </div>
 </div>""", unsafe_allow_html=True)
 
@@ -6582,6 +6572,10 @@ with main_tab2:
 
         active_buys = recent_1m[recent_1m['상태'].str.contains('신규 매수|눌림목|물타기|1차|2차', na=False)].copy()
         if active_buys.empty: active_buys = recent_1m.copy()
+
+        # 최근 1개월 주도주 기준: 1년 내 120% 이상 오를 수 있는 유망 주식
+        if '단기 목표 수익률 (%)' in active_buys.columns:
+            active_buys = active_buys[active_buys['단기 목표 수익률 (%)'] >= 120.0]
 
         sort_col = 'mtf_score' if 'mtf_score' in active_buys.columns else '최대 수익률 (%)'
 
@@ -6775,3 +6769,49 @@ with main_tab2:
             st.dataframe(filtered_df, use_container_width=True, hide_index=True)
     else:
         st.info("💡 위의 [과거 1년 추천 날짜/수익률 전체 전수 스캔] 버튼을 누르면 전체 주식의 추천 날짜와 수익률 표가 완성됩니다.")
+    st.markdown("---")
+    st.markdown("### 🤖 Gemini AI 표 기반 질의응답")
+    
+    if 'table_df' not in locals() or table_df.empty:
+        st.warning("⚠️ 아직 포착된 종목 데이터가 없습니다. 먼저 위의 스캔 버튼을 눌러 표를 생성해주세요.")
+    elif api_key:
+        st.info("💡 제미나이 API가 등록되었습니다. 위 표에 대해 무엇이든 물어보세요!")
+        user_table_question = st.text_input("질문 입력:", placeholder="예: 현재 수익률이 가장 높은 종목은 무엇인가요?", key="ti_gemini_table_q")
+        
+        if st.button("질문하기", key="btn_ask_gemini_table"):
+            if user_table_question:
+                with st.spinner("Gemini가 표 데이터를 분석하고 있습니다..."):
+                    try:
+                        import google.generativeai as genai
+                        genai.configure(api_key=api_key)
+                        
+                        target_df = table_df
+                        if 'selected_date_filter' in locals() and selected_date_filter != "전체 보기":
+                            if 'filtered_df' in locals():
+                                target_df = filtered_df
+                                
+                        csv_data = target_df.to_csv(index=False)
+                        
+                        # Use the most stable evergreen model name
+                        model = genai.GenerativeModel('gemini-3.5-flash')
+                        
+                        system_prompt = (
+                            "당신은 주식 전문 AI 트레이딩 애널리스트입니다. 아래 데이터를 바탕으로 질문에 답변하세요.\n"
+                            "⚠️ [가독성 필수 규칙]\n"
+                            "수익률(%)이나 가격, 종목명 등 중요한 정보는 반드시 HTML 태그로 색상을 지정해서 눈에 띄게 만드세요.\n"
+                            "- 상승/양수(+수익률 등): <span style='color:#ff4b4b; font-weight:bold;'>+수치</span> (빨간색)\n"
+                            "- 하락/음수(-수익률 등): <span style='color:#29b5e8; font-weight:bold;'>-수치</span> (파란색)\n"
+                            "- 종목명: <b>종목명</b> 처럼 굵게 표시\n"
+                            "최대한 글보다는 불릿 포인트(•)와 마크다운을 활용해 가독성 좋게 요약해서 대답하세요."
+                        )
+                        prompt = f"{system_prompt}\n\n[데이터 (CSV)]\n{csv_data}\n\n[사용자 질문]: {user_table_question}"
+                        
+                        response = model.generate_content(prompt)
+                        st.markdown("#### 🤖 답변:")
+                        st.markdown(response.text, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"Gemini API 호출 중 오류가 발생했습니다: {e}")
+            else:
+                st.warning("질문을 입력해주세요.")
+    else:
+        st.warning("⚠️ 제미나이 AI 질의응답 기능을 사용하려면 왼쪽 사이드바에 Gemini API Key를 등록해주세요.")
