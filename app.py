@@ -1121,7 +1121,8 @@ with col_box:
         us_c_badge = "#fecdd3" if "과열" in us_buf['status_txt'] else ("#a7f3d0" if "적정" in us_buf['status_txt'] else "#bfdbfe")
         us_buf_html = f'<div style="flex:1 1 0; min-width:0; background:#1e293b; padding:5px 7px; border-radius:6px; border:1px solid #334155; display:flex; justify-content:space-between; align-items:center; overflow:hidden;"><div><div style="font-size:10px; color:#94a3b8; font-weight:bold; white-space:nowrap;">🇺🇸 미국 버핏 지수</div><div style="font-size:11px; font-weight:bold; color:#ffffff;">{us_buf["pct"]:.1f}% <span style="font-size:9.5px; color:{us_buf["color"]}; white-space:nowrap;">{us_buf["status_txt"]}</span></div></div><div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px;"><div><span style="background:{us_bg_badge}; color:{us_c_badge}; padding:1px 4px; border-radius:4px; font-size:9px; font-weight:bold;">{us_buf["badge"]}</span></div>{us_buf["svg"]}</div></div>'
 
-        full_html = f'<div style="background-color:#0f172a; padding:10px 12px; border-radius:8px; border:1px solid #334155; font-size:12px; overflow:hidden;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #1e293b; padding-bottom:4px;"><span style="font-weight:bold; color:#38bdf8; font-size:12px;">🏛️ 전 세계 주요 증시 지수 & 환율/한·미 버핏 지수 실시간 현황</span><span style="font-size:10px; color:#64748b;">⚡ 실시간 미니 차트 연동</span></div><div style="display:flex; justify-content:space-between; gap:10px;"><div style="flex:1; border-right: 1px solid #1e293b; padding-right: 8px;"><div style="color:#38bdf8; font-weight:bold; font-size:11px; margin-bottom:4px;">🇰🇷 국내 증시 지수</div>{kospi_html}{kosdaq_html}</div><div style="flex:1; padding-left: 2px;"><div style="color:#ff4b4b; font-weight:bold; font-size:11px; margin-bottom:4px;">🇺🇸 미국 증시 지수</div>{nasdaq_html}{sp500_html}</div></div><div style="margin-top:8px; padding-top:6px; border-top:1px solid #1e293b; display:flex; justify-content:space-between; gap:6px; width:100%; box-sizing:border-box;">{usd_html}{kr_buf_html}{us_buf_html}</div></div>'
+        current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        full_html = f'<div style="background-color:#0f172a; padding:10px 12px; border-radius:8px; border:1px solid #334155; font-size:12px; overflow:hidden;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #1e293b; padding-bottom:4px;"><span style="font-weight:bold; color:#38bdf8; font-size:12px;">🏛️ 전 세계 주요 증시 지수 & 환율/한·미 버핏 지수 실시간 현황</span><span style="font-size:10px; color:#64748b;">⚡ 실시간 연동 (기준: {current_time_str})</span></div><div style="display:flex; justify-content:space-between; gap:10px;"><div style="flex:1; border-right: 1px solid #1e293b; padding-right: 8px;"><div style="color:#38bdf8; font-weight:bold; font-size:11px; margin-bottom:4px;">🇰🇷 국내 증시 지수</div>{kospi_html}{kosdaq_html}</div><div style="flex:1; padding-left: 2px;"><div style="color:#ff4b4b; font-weight:bold; font-size:11px; margin-bottom:4px;">🇺🇸 미국 증시 지수</div>{nasdaq_html}{sp500_html}</div></div><div style="margin-top:8px; padding-top:6px; border-top:1px solid #1e293b; display:flex; justify-content:space-between; gap:6px; width:100%; box-sizing:border-box;">{usd_html}{kr_buf_html}{us_buf_html}</div></div>'
         
         st.markdown(full_html, unsafe_allow_html=True)
     except Exception as e:
@@ -4691,6 +4692,8 @@ def verify_5_candle_chart_patterns(df_proc, pos=-1):
 
         vol_ma20 = float(df_proc['Volume'].iloc[max(0, idx-20):idx].mean()) if 'Volume' in df_proc.columns else c_vol
 
+
+
         if c_vol < p_vol * 0.70 and body_curr < body_prev * 0.40 and (c_high - max(c_close, c_open)) > body_curr:
             return False, "🚨 캔들 몸통 수축 & 거래량 줄어듦 약세 (상승 소진 팽이/약세 패턴)"
 
@@ -5382,27 +5385,64 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
             is_class_a = bool(df_proc['Is_Class_A_Pre'].iloc[pos])
 
-            # Trigger 1: 대바닥 턴어라운드 (장기 수렴 + MACD/OBV 바닥 골든크로스)
-            is_ma_converged = (abs(ma20 - ma60) / ma60 <= 0.15) or (abs(ma20 - ma120) / ma120 <= 0.18) if (ma60 > 0 and ma120 > 0) else True
-            is_macd_turnaround = (macd_curr >= signal_curr or macd_hist_curr > 0) and (macd_hist_curr >= macd_hist_prev)
-            is_bottom_reversal = (c_close >= ma20 or c_close >= ma60) and is_ma_converged and is_macd_turnaround and (35.0 <= rsi_val <= 65.0)
-
-            # Trigger 2: Class A 상대강도 상위 5% 전용 정석 계단식 파동 재진입
             vol_curr = float(latest.get('Volume', 0))
             vol_prev = float(prev.get('Volume', vol_curr)) if pos > 0 else vol_curr
             vol_ma20 = float(df_proc['Volume'].iloc[max(0, pos-20):pos].mean()) if 'Volume' in df_proc.columns else vol_curr
             
-            vol_dry_up = (vol_curr <= vol_prev * 0.55) or (vol_curr <= vol_ma20 * 0.60)
+            # 🚀 [월가 정석 1단계] 기준봉(Reference Candle) 탐색 (과거 1일~7일 전)
+            has_ref_candle = False
+            ref_mid_price = 0.0
+            
+            search_window = min(7, pos)
+            for i in range(1, search_window + 1):
+                idx = pos - i
+                past_row = df_proc.iloc[idx]
+                p_open = float(past_row['Open'])
+                p_close = float(past_row['Close'])
+                p_vol = float(past_row['Volume'])
+                
+                # 기준봉 조건 완화: 양봉이면서 4% 이상 상승, 거래량은 20일 평균 대비 1.5배(150%) 이상
+                is_yangbong = p_close > p_open
+                is_surge_price = p_close >= p_open * 1.04
+                is_surge_vol = p_vol >= vol_ma20 * 1.5
+                
+                if is_yangbong and is_surge_price and is_surge_vol:
+                    has_ref_candle = True
+                    ref_mid_price = (p_open + p_close) / 2.0
+                    break
+                    
+            # 🚀 [월가 정석 2단계] 거래량 급감(VCP) 및 지지선(Sweet Spot) 안착 검증
             obv_curr = float(df_proc['OBV'].iloc[pos]) if 'OBV' in df_proc.columns else 0
             obv_ma10 = float(df_proc['OBV_MA'].iloc[pos]) if 'OBV_MA' in df_proc.columns else 0
             is_obv_supported = (obv_curr >= obv_ma10)
-            c_low_val = float(latest['Low'])
-            is_support_touch = (c_low_val <= ma20 * 1.015) or (c_low_val <= ma60 * 1.015)
             
-            is_class_a_staircase_reentry = is_class_a and vol_dry_up and is_obv_supported and is_support_touch and (c_close >= ma60)
-            is_secular_megacap_trend = (c_close >= ma20 or c_close >= ma60) and (ma20 >= ma60) and (disp_20 >= 94.0) and (35.0 <= rsi_val <= 68.0) and is_macd_turnaround
+            # 당일 거래량이 20일 평균의 60% 이하 또는 전일 대비 60% 수준으로 감소했는가? (종목 수가 안 나오는 현상 방지)
+            is_volume_dried = (vol_curr <= vol_ma20 * 0.60) or (vol_curr <= vol_prev * 0.60)
+            
+            c_low_val = float(latest['Low'])
+            c_open_val = float(latest['Open'])
+            
+            # 주가가 20일선, 60일선 또는 기준봉 절반 가격 근처에 도달했는지 확인 (안전 마진 확보)
+            is_touching_ma20 = (c_low_val <= ma20 * 1.02) and (c_close >= ma20 * 0.98)
+            is_touching_ma60 = (c_low_val <= ma60 * 1.02) and (c_close >= ma60 * 0.98)
+            is_touching_mid = (c_low_val <= ref_mid_price * 1.02) and (c_close >= ref_mid_price * 0.98) if has_ref_candle else False
+            
+            # 🚀 [월가 정석 3단계] 최종 안전 잠금장치 (Fake Support 필터링)
+            ma20_prev = float(prev.get('MA_20', ma20))
+            is_ma20_rising = (ma20 >= ma20_prev * 0.998) # 20일선이 최소한 평탄하거나 우상향 중일 것 (하락 각도가 심하면 탈락)
+            is_rebounding = (c_close >= c_low_val * 1.005) or (c_close >= c_open_val) # 저가 대비 0.5% 이상 반등(밑꼬리)했거나 양봉일 것
+            
+            # 현재 캔들이 급락 음봉(-5% 이상 하락)이면 제외하고, 위의 잠금장치를 모두 통과해야 함
+            is_safe_candle = (c_close >= c_open_val * 0.96) and is_ma20_rising and is_rebounding
+            
+            is_reference_candle_pullback = has_ref_candle and is_volume_dried and (is_touching_ma20 or is_touching_ma60 or is_touching_mid) and is_safe_candle and is_obv_supported
 
-            if not (is_bottom_reversal or is_class_a_staircase_reentry or is_secular_megacap_trend):
+            # 기존 대파동 주도주 릴레이 조건 (안전망 유지)
+            is_support_touch = (c_low_val <= ma20 * 1.015) or (c_low_val <= ma60 * 1.015)
+            is_class_a_staircase_reentry = is_class_a and is_volume_dried and is_obv_supported and is_support_touch and (c_close >= ma60)
+            is_secular_megacap_trend = (c_close >= ma20 or c_close >= ma60) and (ma20 >= ma60) and (disp_20 >= 94.0) and (35.0 <= rsi_val <= 68.0)
+
+            if not (is_reference_candle_pullback or is_class_a_staircase_reentry or is_secular_megacap_trend):
                 continue
 
             c_high = float(latest['High'])
@@ -5480,25 +5520,29 @@ def stock_history_task(task_tuple, ctx_obj, bulk_cache=None):
 
             hit_date_str = hit_dt.strftime('%Y-%m-%d')
             
-            # 🎯 [신규] 현실적 추천 진입가 (Entry Price) 정밀 산출 로직
-            # 1. 볼린저 상단 돌파 장대양봉: 양봉 몸통 50% 되돌림
-            # 2. RSI 눌림목 (40~55): 20일/60일선 중 근접 지지선 터치
+            # 🎯 [개편] 월가 기준봉 눌림목 진입가 (Entry Price) 정밀 산출 로직
+            # 최근 2일 이평선 기울기를 활용하여 내일(매수일)의 이평선 가격을 예측 후 대기 매수
             calc_entry = c_close
-            ma20_val_entry = float(latest.get('MA_20', c_close))
-            ma60_val_entry = float(latest.get('MA_60', c_close))
-            c_open_val = float(latest.get('Open', c_close))
-            bb_upper_entry = float(latest.get('BB_Upper', c_close))
+            ma20_curr = float(latest.get('MA_20', c_close))
+            ma20_prev_val = float(prev.get('MA_20', ma20_curr))
+            ma60_curr = float(latest.get('MA_60', c_close))
+            ma60_prev_val = float(prev.get('MA_60', ma60_curr))
             
-            is_breakout_candle = (c_close > c_open_val) and (c_close > bb_upper_entry)
+            # 내일 이평선 값 선형 외삽 예측
+            ma20_pred_tomorrow = ma20_curr + (ma20_curr - ma20_prev_val)
+            ma60_pred_tomorrow = ma60_curr + (ma60_curr - ma60_prev_val)
             
-            if is_breakout_candle:
-                calc_entry = (c_close + c_open_val) / 2.0
-            elif 40.0 <= rsi_val <= 55.0:
-                supports = [m for m in [ma20_val_entry, ma60_val_entry] if m < c_close]
+            if has_ref_candle and ref_mid_price > 0:
+                # 1순위: 기준봉 절반(Mid-point)과 '내일 예상' 20일선 중 더 높은 방어선 채택
+                calc_entry = max(ref_mid_price, ma20_pred_tomorrow) * 1.005 # 지지선 0.5% 위 대기
+            else:
+                # 2순위: 내일 예상 20일선 또는 60일선 지지선
+                supports = [m for m in [ma20_pred_tomorrow, ma60_pred_tomorrow] if m < c_close]
                 if supports:
-                    calc_entry = max(supports) * 1.005 # 지지선 0.5% 위
-            
-            if calc_entry <= 0 or calc_entry > c_close * 1.05: 
+                    calc_entry = max(supports) * 1.005
+                    
+            # 만약 계산된 진입가가 현재가보다 너무 높으면(버그 방지) 현재가 유지
+            if calc_entry <= 0 or calc_entry > c_close * 1.02: 
                 calc_entry = round(c_close, 2)
 
             after_df = df_proc.iloc[pos + 1:]
@@ -6541,8 +6585,8 @@ with main_tab2:
 
         sort_col = 'mtf_score' if 'mtf_score' in active_buys.columns else '최대 수익률 (%)'
 
-        kr_active = active_buys[active_buys['시장'].str.contains('국내', na=False)].sort_values(by=[sort_col], ascending=False).head(5)
-        us_active = active_buys[active_buys['시장'].str.contains('미국', na=False)].sort_values(by=[sort_col], ascending=False).head(5)
+        kr_active = active_buys[active_buys['시장'].str.contains('국내', na=False)].sort_values(by=[sort_col], ascending=False).drop_duplicates(subset=['티커']).head(5)
+        us_active = active_buys[active_buys['시장'].str.contains('미국', na=False)].sort_values(by=[sort_col], ascending=False).drop_duplicates(subset=['티커']).head(5)
 
         has_kr = not kr_active.empty
         has_us = not us_active.empty
