@@ -2695,16 +2695,13 @@ def get_gemini_advice(api_key, ticker, ai_data, entry_price, roi, currency_symbo
         
         # 💡 [PRO QUANT 교정] 특수 이모지 파싱 문법 에러 원천 차단 포맷
         system_instruction = (
-            "당신은 월스트리트 프랍 데스크 출신의 냉철한 PRO QUANT 트레이딩 디렉터이자 전문 수석 투자 트레이너입니다.\n"
-            "손익비 2.0 : 1 (+5.0% 익절 / -2.5% 손절) 전략과 퀀트 엔진의 진입 가이드를 철저히 준수하여 대응 시나리오를 지시하십시오.\n\n"
+            "당신은 월스트리트 프랍 데스크 출신의 냉철한 PRO QUANT 트레이딩 디렉터이자 리스크 관리자입니다.\n"
+            "사용자는 이 종목을 '오늘 무조건 매수'하기로 결정한 상태입니다. 당신의 역할은 매수를 막는 것이 아니라, 가장 안전하고 유리한 '최적의 진입 타점(지정가 눌림목)'을 짚어주는 것입니다.\n\n"
             "[핵심 매매 규칙 및 진입 지침]\n"
-            "1. 포지션 미보유 시 신규 진입 지침 (퀀트 엔진과 100% 일치):\n"
-            "   - [정상 이격도(20일선 이격도 98%~105%)]: 🟢 '신규 분할 매수 즉시 승인' (현재가 부근 1차 진입).\n"
-            "   - [단기 과열 주도주(20일선 이격도 105%~115%)]: 🟡 'S급 주도주 승인 / 지정가 눌림목 대기'. 종목의 정배열 추세와 펀더멘털은 최상급으로 승인하되, 현재가 시장가 추격 매수(Market Buy)는 잔파동 손절 위험이 있으므로 금지하고, '5일선/10일선 지지선 부근 눌림목(지정가) 분할 매수 예약 체결' 전략을 명확히 지시하십시오.\n"
-            "   - [극단적 과열(이격도 115% 초과 or 200일선 130% 초과)]: 🔴 '신규 진입 절대 금지 / 관망'. 보유자 전용 익절 영역.\n"
-            "2. 손익비 2.0 : 1 구조: 1차 목표가(+5.0%) 도달 시 50% 물량 익절을 지시하십시오.\n"
+            "1. 시장가 추격 매수 절대 금지: 현재 보조지표(MACD 등)나 승률이 불안정하더라도 매수 자체를 철회시키지 마십시오. 대신, 데이터를 분석하여 가장 지지력이 강한 '핵심 지지선(예: 5일선, 10일선, 매물대 하단 등)'의 정확한 가격을 제시하고, 반드시 그 가격에 '지정가(Limit Order) 매수'를 걸어두고 기다리라고 지시하십시오.\n"
+            "2. 손익비 2.0 : 1 구조: 지정가 체결 후 1차 목표가(+5.0%) 도달 시 50% 물량 익절을 지시하십시오.\n"
             "3. Break-Even 본절가 방어: 주가가 +3.0% 이상 상승 시, 손절가를 매수가 +0.3%(수수료 보존)로 상향하여 리스크를 0으로 확정짓는 전략을 조언하십시오.\n"
-            "4. -2.5% Hard Cap 손절: -2.5% 하락 시 즉시 원칙 손절을 선언하십시오."
+            "4. -2.5% Hard Cap 손절: 지정가 매수 체결 후 -2.5% 하락 시 즉시 원칙 손절을 선언하십시오."
         )
 
         fact_sheet = f"[종목코드: {ticker}]\n[포지션 정보]\n{position_info}\n[기술적 지표 및 실시간 데이터]\n{ai_data}"
@@ -3722,11 +3719,15 @@ def render_dashboard(tab_name, df_raw, api_key, entry_price, selected_name, safe
             )
             roi = ((ai['price'] - entry_price) / entry_price * 100) if (entry_price > 0 and ai.get('price', 0) > 0) else 0.0
 
+            session_key = f"gemini_advice_{tab_name}"
             if st.button("🔍 제미나이 AI 분석 실행", key=f"gemini_btn_{tab_name}"):
                 with st.spinner("제미나이가 데이터 시트를 분석 중입니다..."):
                     advice_text = get_gemini_advice(api_key, selected_name, ai, entry_price, roi, currency_symbol, user_question)
+                    st.session_state[session_key] = advice_text
+            
+            if session_key in st.session_state:
                 with st.container(border=True):
-                    st.markdown(advice_text)
+                    st.markdown(st.session_state[session_key])
 
         # AI 분석 투명성 근거 도장
         st.caption("ℹ️ *본 AI 진단은 실시간 시세, POC 매물대, TTM Squeeze, 6대 이평선 수치(Fact Sheet)만을 바탕으로 생성된 정량적 분석 결과입니다.*")
@@ -6781,6 +6782,7 @@ with main_tab2:
         st.info("💡 제미나이 API가 등록되었습니다. 위 표에 대해 무엇이든 물어보세요!")
         user_table_question = st.text_input("질문 입력:", placeholder="예: 현재 수익률이 가장 높은 종목은 무엇인가요?", key="ti_gemini_table_q")
         
+        session_key_table = "gemini_table_answer"
         if st.button("질문하기", key="btn_ask_gemini_table"):
             if user_table_question:
                 with st.spinner("Gemini가 표 데이터를 분석하고 있습니다..."):
@@ -6799,7 +6801,8 @@ with main_tab2:
                         model = genai.GenerativeModel('gemini-3.5-flash')
                         
                         system_prompt = (
-                            "당신은 주식 전문 AI 트레이딩 애널리스트입니다. 아래 데이터를 바탕으로 질문에 답변하세요.\n"
+                            "당신은 과거 백테스팅, 수급, 캔들 패턴 데이터를 바탕으로 '최고의 1종목'을 발굴하는 수석 데이터 애널리스트입니다.\n"
+                            "사용자는 이 표에 있는 종목 중 '오늘 단 1개만 매수'해야 하는 상황입니다. 데이터(과거 승률, 수익률 등)를 비교 분석하여 펀더멘털과 확률이 가장 높은 '대장주 1개'를 강력히 추천하고 그 이유를 설명하세요.\n\n"
                             "⚠️ [가독성 필수 규칙]\n"
                             "수익률(%)이나 가격, 종목명 등 중요한 정보는 반드시 HTML 태그로 색상을 지정해서 눈에 띄게 만드세요.\n"
                             "- 상승/양수(+수익률 등): <span style='color:#ff4b4b; font-weight:bold;'>+수치</span> (빨간색)\n"
@@ -6810,11 +6813,14 @@ with main_tab2:
                         prompt = f"{system_prompt}\n\n[데이터 (CSV)]\n{csv_data}\n\n[사용자 질문]: {user_table_question}"
                         
                         response = model.generate_content(prompt)
-                        st.markdown("#### 🤖 답변:")
-                        st.markdown(response.text, unsafe_allow_html=True)
+                        st.session_state[session_key_table] = response.text
                     except Exception as e:
                         st.error(f"Gemini API 호출 중 오류가 발생했습니다: {e}")
             else:
                 st.warning("질문을 입력해주세요.")
+                
+        if session_key_table in st.session_state:
+            st.markdown("#### 🤖 답변:")
+            st.markdown(st.session_state[session_key_table], unsafe_allow_html=True)
     else:
         st.warning("⚠️ 제미나이 AI 질의응답 기능을 사용하려면 왼쪽 사이드바에 Gemini API Key를 등록해주세요.")
