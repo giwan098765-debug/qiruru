@@ -812,8 +812,8 @@ def get_realtime_sector_influence():
                     return full_t, None, None
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
-with ThreadPoolExecutor(max_workers=4) as executor:
-    futures = [executor.submit(fetch_kr_single, (ft, ct)) for ft, ct in zip(all_tickers, clean_tickers)]
+                with ThreadPoolExecutor(max_workers=20) as executor:
+                    futures = [executor.submit(fetch_kr_single, (ft, ct)) for ft, ct in zip(all_tickers, clean_tickers)]
                     for future in as_completed(futures):
                         ft, c_ser, v_ser = future.result()
                         if c_ser is not None and v_ser is not None:
@@ -821,7 +821,7 @@ with ThreadPoolExecutor(max_workers=4) as executor:
                             df_vol[ft] = v_ser
             else:
                 # 미국 종목은 yfinance 대량 수집
-                raw_df = yf.download(all_tickers, period="5d", progress=False, threads=False)
+                raw_df = yf.download(all_tickers, period="5d", progress=False)
                 df_close = raw_df['Close']
                 df_vol = raw_df['Volume']
 
@@ -996,7 +996,7 @@ def get_realtime_market_indices_dashboard():
         return k, None
 
     out = {}
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         results = executor.map(fetch_single_index, tasks)
         for k, v in results:
             if v: out[k] = v
@@ -1359,7 +1359,7 @@ def bulk_preload_and_clean_market_data(ticker_list, period="1y"):
                 pass
             return orig_t, f_t, c_code, None
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             futures = [executor.submit(fetch_kr_single, item) for item in kr_items]
             for future in as_completed(futures, timeout=120): # 최대 2분 대기 (무한 로딩 방지)
                 try:
@@ -1429,7 +1429,7 @@ def bulk_preload_and_clean_market_data(ticker_list, period="1y"):
                 pass
             return t_item, None
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             futures = [executor.submit(fetch_missing_single, t) for t in missing_tickers]
             for future in as_completed(futures, timeout=60): # 최대 1분 대기 (무한 로딩 방지)
                 try:
@@ -6154,7 +6154,7 @@ def bg_scan_worker(assets_dict):
         res_tuple = run_unified_quant_eval(df_sub, stock_name, ticker_code)
         return (target_key, ticker_code, res_tuple)
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(scan_task_fast, task) for task in all_tasks]
         for future in futures:
             processed += 1
@@ -6233,7 +6233,7 @@ def bg_scan_worker_midterm(assets_dict):
         except Exception:
             return None
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(midterm_task, task): task for task in all_tasks}
         for future in as_completed(futures):
             processed += 1
@@ -6321,7 +6321,7 @@ def scan_all_historical_midterm_signals(assets_dict, target_market="전체"):
     historical_hits = []
     processed = 0
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(stock_history_task, (task[0], task[1], task[2], bulk_cache), ctx): task for task in all_tasks}
         for future in as_completed(futures):
             processed += 1
