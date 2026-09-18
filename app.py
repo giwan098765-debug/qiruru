@@ -1544,8 +1544,10 @@ def filter_closed_daily_candles(df, ticker):
     """
     if df is None or df.empty:
         return df
-    
-    now = datetime.now()
+
+# 💡 스트림릿 서버(UTC)에서도 무조건 한국 시간(KST)을 사용하도록 고정
+    from datetime import datetime, timedelta
+    now = datetime.utcnow() + timedelta(hours=9)
     now_time = now.time()
     today_date = now.date()
 
@@ -1570,7 +1572,8 @@ def get_last_closed_market_date(ticker=None):
     """
     ⚡ [실시간 캔들 추천 모드] 장중에도 그날그날 당일 실시간 캔들 시세를 바탕으로 주식을 추천합니다.
     """
-    now = datetime.now()
+    from datetime import datetime, timedelta
+    now = datetime.utcnow() + timedelta(hours=9)  # 서버 시간 오류 방지
     if now.weekday() == 5:
         return (now - timedelta(days=1)).strftime("%Y-%m-%d")
     elif now.weekday() == 6:
