@@ -493,7 +493,7 @@ US_KOREAN_NAMES = {
     "SYK": "스트라이커", "Stryker": "스트라이커",
     "SYF": "싱크로니 파이낸셜", "SynchronyFinancial": "싱크로니 파이낸셜",
     "SNPS": "시놉시스", "Synopsys": "시놉시스",
-    "SYY": "시스코 코퍼레이션", "Sysco": "시스코 코퍼레이션",
+    "SㄹYY": "시스코 코퍼레이션", "Sysco": "시스코 코퍼레이션",
     "TMUS": "T-모바일", "T-Mobile": "T-모바일",
     "TROW": "T. 로우 프라이스", "TRowePrice": "T. 로우 프라이스",
     "TTWO": "테이크투 인터랙티브", "TakeTwoInteractive": "테이크투 인터랙티브",
@@ -617,19 +617,25 @@ yf.Ticker = FakeTicker
 # ====================================================================
 macro_trends = {"KR": True, "US": True, "COIN": True}
 import streamlit as st
-try:
-    from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
-except ImportError:
-    try:
-        from streamlit.runtime.scriptrunner_utils import get_script_run_ctx, add_script_run_ctx
-    except ImportError:
+import importlib
+
+
+def _get_streamlit_script_ctx_helpers():
+    for module_name in (
+        "streamlit.runtime.scriptrunner",
+        "streamlit.runtime.scriptrunner_utils",
+        "streamlit.scriptrunner",
+    ):
         try:
-            from streamlit.scriptrunner import get_script_run_ctx, add_script_run_ctx
-        except ImportError:
-            def get_script_run_ctx():
-                return None
-            def add_script_run_ctx(thread=None, ctx=None):
-                pass
+            module = importlib.import_module(module_name)
+            return module.get_script_run_ctx, module.add_script_run_ctx
+        except ModuleNotFoundError:
+            continue
+    return (lambda: None, lambda thread=None, ctx=None: None)
+
+
+get_script_run_ctx, add_script_run_ctx = _get_streamlit_script_ctx_helpers()
+
 import FinanceDataReader as fdr
 import pandas as pd
 import numpy as np
@@ -4919,19 +4925,24 @@ def evaluate_stock_signal(df_proc, ai_data):
     if calc_entry <= 0 or (abs(c_close - calc_entry) / calc_entry * 100.0) > 7.0:
         return None, 0.0, 0.0, ""
 
-    # 💡 [상방 이평선 저항벽 회피 가드레일] 캔들 위 60/120/200일선 저항선 거리 확인
-    ma60  = float(df_proc['MA_60'].iloc[-1])  if 'MA_60' in df_proc.columns else c_close
+    # 💡 [안티그래비티 마스터 가드레일] 캔들 위 장기 악성 매물대(천장) 원천 차단
+    ma20 = float(df_proc['MA_20'].iloc[-1]) if 'MA_20' in df_proc.columns else c_close
+    ma60 = float(df_proc['MA_60'].iloc[-1]) if 'MA_60' in df_proc.columns else c_close
     ma120 = float(df_proc['MA_120'].iloc[-1]) if 'MA_120' in df_proc.columns else c_close
     ma200 = float(df_proc['MA_200'].iloc[-1]) if 'MA_200' in df_proc.columns else c_close
-    
-    upper_heavy_mas = [m for m in [ma60, ma120, ma200] if (m > c_close or m > calc_entry)]
-    if upper_heavy_mas:
-        nearest_upper = min(upper_heavy_mas)
-        dist_close_pct = ((nearest_upper - c_close) / c_close) * 100.0
-        dist_entry_pct = ((nearest_upper - calc_entry) / calc_entry) * 100.0
-        # 약세장 역주행주/V자 반등주는 3.8% 여유 공간만 있어도 1~5봉 4~5% 단기 스윙 타점 허용
-        min_headroom = 3.8 if (ai_data.get('is_rs_leader') or ai_data.get('is_v_bounce')) else 5.0
-        if dist_close_pct < min_headroom or dist_entry_pct < min_headroom:
+
+    # 1. 절대 규칙: 120일선 또는 200일선 중 단 하나라도 현재 주가 위에 있다면 즉시 매수 차단
+    if c_close < ma120 or c_close < ma200:
+        return None, 0.0, 0.0, ""
+
+    # 2. 정배열 기초 검증: 60일선이 최소한 120일선보다는 위에 있어야 함 (대세 하락 방어)
+    if ma60 < ma120:
+        return None, 0.0, 0.0, ""
+
+    # 3. 20일선 단기 저항벽 검사: 20일선 아래에 있더라도, 이격이 너무 크면 완전한 하락 추세임
+    if ma20 > c_close:
+        dist_to_ma20 = ((ma20 - c_close) / c_close) * 100.0
+        if dist_to_ma20 > 5.0:
             return None, 0.0, 0.0, ""
 
     # 🛡️ [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 검증]
@@ -5047,15 +5058,19 @@ def evaluate_surge_stock_signal(df_proc, ai_data):
     vol_ma20= float(latest['Vol_MA_20']) if float(latest['Vol_MA_20']) > 0 else 1.0
     rvol_val = c_vol / vol_ma20
 
-    # 💡 [상방 이평선 저항벽 5% 미만 무조건 차단 가드레일] 캔들 위 5% 이내에 60/120/200일선 존재 시 100% 매수 추천 차단
-    ma60  = float(latest['MA_60'])  if 'MA_60' in latest else c_close
-    ma120 = float(latest['MA_120']) if 'MA_120' in latest else c_close
-    ma200 = float(latest['MA_200']) if 'MA_200' in latest else c_close
-    upper_heavy_mas = [m for m in [ma60, ma120, ma200] if m > c_close]
-    if upper_heavy_mas:
-        nearest_upper = min(upper_heavy_mas)
-        min_hd = 3.8 if ai_data.get('is_rs_leader') else 5.0
-        if ((nearest_upper - c_close) / c_close) * 100.0 < min_hd:
+    # 💡 [안티그래비티 초급등주 가드레일] 캔들 위 120/200일선 장기 매물대 무조건 차단
+    ma20  = float(latest['MA_20']) if 'MA_20' in latest and pd.notna(latest['MA_20']) else c_close
+    ma60  = float(latest['MA_60']) if 'MA_60' in latest and pd.notna(latest['MA_60']) else c_close
+    ma120 = float(latest['MA_120']) if 'MA_120' in latest and pd.notna(latest['MA_120']) else c_close
+    ma200 = float(latest['MA_200']) if 'MA_200' in latest and pd.notna(latest['MA_200']) else c_close
+
+    # 초급등주라도 머리 위에 장기 악성 매물대가 있으면 무조건 차단
+    if c_close < ma120 or c_close < ma200:
+        return None, 0.0, 0.0, ""
+    if ma60 < ma120:
+        return None, 0.0, 0.0, ""
+    if ma20 > c_close:
+        if ((ma20 - c_close) / c_close) * 100.0 > 5.0:
             return None, 0.0, 0.0, ""
 
     # 🛡️ [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 검증]
@@ -5160,13 +5175,17 @@ def run_unified_quant_eval(df_sub, name, ticker):
     if (open_price - ma5_val) / ma5_val > 0.05:
         return None, None
 
-    # 3. 🚨 [상방 이평선 저항벽 거리 확인]
-    upper_heavy_mas = [m for m in [ma60_val, ma120_val, ma200_val] if m > c_close_val]
-    if upper_heavy_mas:
-        nearest_upper = min(upper_heavy_mas)
-        min_room = 3.8 if (is_rs_lead or is_vbounce) else 5.0
-        if ((nearest_upper - c_close_val) / c_close_val) * 100.0 < min_room:
+    # 3. 🚨 [안티그래비티 통합 가드레일] 캔들 위 120/200일선 장기 매물대 무조건 차단
+    if c_close_val < ma120_val or c_close_val < ma200_val:
+        return None, None
+
+    if ma60_val < ma120_val:
+        return None, None
+
+    if ma20_val > c_close_val:
+        if ((ma20_val - c_close_val) / c_close_val) * 100.0 > 5.0:
             return None, None
+
 
     # 4. 🛡️ [60일·120일·200일선 가짜 돌파 차단 5대 마스터 규칙 검증]
     is_valid_breakout, _ = verify_ma_breakout_master_rules(df_proc, pos=-1)
@@ -6220,6 +6239,9 @@ def bg_scan_worker_midterm(assets_dict):
     status_box.markdown("🚀 **과거 1년 정예 시그널 초고속 전수 스캔 중...**")
     historical_hits = []
     processed = 0
+
+    res_kr = []
+    res_us = []
 
     def midterm_task(item_tuple):
         name, ticker = item_tuple[0], item_tuple[1]
